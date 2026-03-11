@@ -35,6 +35,9 @@ app.use("/api/lists", authMiddleware, listsRouter);
 app.use("/api/leads", authMiddleware, leadsRouter);
 app.use("/api/properties", authMiddleware, propertiesRouter);
 app.use("/api/global", globalRouter);
+app.use("/", (req, res) => {
+  return "Vespera Backend is UP";
+});
 
 // ✅ FIX PORT FALLBACK
 const PORT = process.env.PORT || 5000;
