@@ -1,4 +1,5 @@
 import pool from "../db/pool.js";
+import { processDueFollowUps } from "../services/followupService.js";
 
 /**
  * CREATE LEAD
@@ -45,7 +46,24 @@ export const createLead = async (req, res) => {
     }
 
     const { productGroup, customerGroup, tags, dealSize, leadPotential, leadStage } = req.body;
-    const { assigned_to, follow_up_date, repeat_follow_up, repeat_interval, follow_up_notes } = req.body;
+
+    // Support both snake_case (backend) and camelCase (frontend) field naming
+    const assigned_to = req.body.assigned_to || req.body.assignedTo || null;
+
+    const follow_up_date = req.body.follow_up_date || (() => {
+      if (req.body.followUpDate) {
+        const time = req.body.followUpTime || "00:00";
+        return `${req.body.followUpDate}T${time}`;
+      }
+      return null;
+    })();
+
+    const repeat_follow_up =
+      req.body.repeat_follow_up ?? req.body.repeatFollowUp ?? false;
+    const repeat_interval =
+      req.body.repeat_interval || req.body.repeatInterval || null;
+    const follow_up_notes =
+      req.body.follow_up_notes || req.body.followUpNotes || null;
 
     const result = await pool.query(
       `INSERT INTO leads (
@@ -84,9 +102,9 @@ export const createLead = async (req, res) => {
         leadPotential || null,
         leadStage || null,
 
-        assigned_to || null,
+        assigned_to,
         follow_up_date || null,
-        repeat_follow_up || false,
+        repeat_follow_up,
         repeat_interval || null,
         follow_up_notes || null
       ]
@@ -192,17 +210,25 @@ export const getLeadById = async (req, res) => {
 
     if (role === "admin") {
       query = `
-        SELECT ld.*, l.name AS list_name
+        SELECT ld.*, l.name AS list_name,
+               u.username AS assignee_name, u.email AS assignee_email,
+               owner.username AS list_owner_name, owner.email AS list_owner_email
         FROM leads ld
         INNER JOIN lists l ON ld.list_id = l.id
+        LEFT JOIN users u ON ld.assigned_to = u.id
+        LEFT JOIN users owner ON l.owner_id = owner.id
         WHERE ld.id = $1
       `;
       params = [id];
     } else {
       query = `
-        SELECT ld.*, l.name AS list_name
+        SELECT ld.*, l.name AS list_name,
+               u.username AS assignee_name, u.email AS assignee_email,
+               owner.username AS list_owner_name, owner.email AS list_owner_email
         FROM leads ld
         INNER JOIN lists l ON ld.list_id = l.id
+        LEFT JOIN users u ON ld.assigned_to = u.id
+        LEFT JOIN users owner ON l.owner_id = owner.id
         WHERE ld.id = $1 AND l.owner_id = $2
       `;
       params = [id, user_id];
@@ -228,23 +254,50 @@ export const getLeadById = async (req, res) => {
 export const updateLead = async (req, res) => {
   try {
     const user_id = req.user.id;
+    const user_role = req.user.role;
     const { id } = req.params;
 
-    const ownershipCheck = await pool.query(
-      `SELECT ld.id
-       FROM leads ld
-       INNER JOIN lists l ON ld.list_id = l.id
-       INNER JOIN users u ON u.id = $2
-       WHERE ld.id = $1 AND (l.owner_id = $2 OR u.role = 'admin')`,
-      [id, user_id]
-    );
+    // Only admins, list owners, or the assigned user can update a lead.
+    if (user_role !== "admin") {
+      const leadPermissions = await pool.query(
+        `SELECT ld.assigned_to, l.owner_id
+         FROM leads ld
+         INNER JOIN lists l ON ld.list_id = l.id
+         WHERE ld.id = $1`,
+        [id]
+      );
 
-    if (ownershipCheck.rowCount === 0) {
-      return res.status(403).json({
-        success: false,
-        message: "You don't have permission to update this lead"
-      });
+      if (leadPermissions.rowCount === 0) {
+        return res.status(404).json({ success: false, message: "Lead not found" });
+      }
+
+      const { assigned_to, owner_id } = leadPermissions.rows[0];
+
+      if (owner_id !== user_id && assigned_to !== user_id) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have permission to update this lead"
+        });
+      }
     }
+
+    // Support both snake_case (backend) and camelCase (frontend) field naming
+    const assigned_to = req.body.assigned_to || req.body.assignedTo || null;
+
+    const follow_up_date = req.body.follow_up_date || (() => {
+      if (req.body.followUpDate) {
+        const time = req.body.followUpTime || "00:00";
+        return `${req.body.followUpDate}T${time}`;
+      }
+      return null;
+    })();
+
+    const repeat_follow_up =
+      req.body.repeat_follow_up ?? req.body.repeatFollowUp ?? false;
+    const repeat_interval =
+      req.body.repeat_interval || req.body.repeatInterval || null;
+    const follow_up_notes =
+      req.body.follow_up_notes || req.body.followUpNotes || null;
 
     const result = await pool.query(
       `UPDATE leads SET
@@ -291,9 +344,9 @@ export const updateLead = async (req, res) => {
         req.body.productGroup || null,
         req.body.customerGroup || null,
         req.body.tags && req.body.tags.length ? req.body.tags : null,
-        assigned_to || null,
+        assigned_to,
         follow_up_date || null,
-        repeat_follow_up || false,
+        repeat_follow_up,
         repeat_interval || null,
         follow_up_notes || null,
         id
@@ -402,5 +455,18 @@ export const searchLeads = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead search failed" });
+  }
+};
+
+/**
+ * TRIGGER DUE FOLLOW-UPS (can be used for manual trigger/testing)
+ */
+export const triggerFollowUps = async (req, res) => {
+  try {
+    await processDueFollowUps();
+    res.json({ success: true, message: "Follow-up processing triggered" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Failed to process follow-ups" });
   }
 };

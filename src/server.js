@@ -10,6 +10,7 @@ import propertiesRouter from "./routes/properties.js"
 import globalRouter from "./routes/globalRouter.js";
 import cors from "cors";
 import { authMiddleware, requireRole } from "./middleware/security.js";
+import { startFollowUpScheduler } from "./services/followupService.js";
 
 dotenv.config(); // loads .env
 
@@ -48,6 +49,9 @@ app.listen(PORT, async () => {
   try {
     await pool.query("SELECT 1"); // test DB connection
     console.log("✅ Database connected");
+
+    // Start follow-up email scheduler if configured
+    startFollowUpScheduler();
   } catch (error) {
     console.log("❌ Database connection failed");
     console.error(error.message);

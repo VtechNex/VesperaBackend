@@ -16,6 +16,7 @@ ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS repeat_interval INTERVAL,
   ADD COLUMN IF NOT EXISTS follow_up_count INTEGER DEFAULT 0 NOT NULL,
   ADD COLUMN IF NOT EXISTS follow_up_notes TEXT;
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT now();
 
 -- Constraints for new leads fields
 ALTER TABLE leads
