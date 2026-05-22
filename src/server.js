@@ -1,61 +1,64 @@
 import dotenv from "dotenv";
 import express from "express";
+import cors from "cors";
 import pool from "./db/pool.js";
 import authRouter from "./routes/auth.js";
 import adminRouter from "./routes/admin.user.routes.js";
 import qualifiersRouter from "./routes/qualifiers.js";
 import listsRouter from "./routes/lists.js";
 import leadsRouter from "./routes/leads.js";
-import propertiesRouter from "./routes/properties.js"
+import propertiesRouter from "./routes/properties.js";
 import globalRouter from "./routes/globalRouter.js";
-import cors from "cors";
+import settingsRouter from "./routes/settings.js";
 import { authMiddleware, requireRole } from "./middleware/security.js";
 import { startFollowUpScheduler } from "./services/followupService.js";
+import { ensureSchema } from "./utils/schemaBootstrap.js";
 
-dotenv.config(); // loads .env
+dotenv.config();
 
 const app = express();
 
-/* ✅ CORS CONFIG */
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://vespera-web-app.vercel.app"], // frontend URL
+    origin: ["http://localhost:5173", "https://vespera-web-app.vercel.app"],
     methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
 
-// Routes
 app.use("/api/auth", authRouter);
 app.use("/api/admin", authMiddleware, requireRole("admin"), adminRouter);
 app.use("/api/admin/qualifiers", authMiddleware, requireRole("admin"), qualifiersRouter);
 app.use("/api/lists", authMiddleware, listsRouter);
 app.use("/api/leads", authMiddleware, leadsRouter);
 app.use("/api/properties", authMiddleware, propertiesRouter);
+app.use("/api/settings", authMiddleware, settingsRouter);
 app.use("/api/global", globalRouter);
 app.use("/", (req, res) => {
   res.send("Vespera Backend is UP");
 });
 
-// ✅ FIX PORT FALLBACK
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, async () => {
-  console.log(`✅ Server running on port ${PORT}`);
-
+async function startServer() {
   try {
-    await pool.query("SELECT 1"); // test DB connection
-    console.log("✅ Database connected");
-
-    // Start follow-up email scheduler if configured
+    await pool.query("SELECT 1");
+    await ensureSchema();
+    console.log("Database connected");
     startFollowUpScheduler();
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
   } catch (error) {
-    console.log("❌ Database connection failed");
+    console.log("Database connection failed");
     console.error(error.message);
+    process.exit(1);
   }
-});
+}
+
+startServer();
 
 export default app;

@@ -1,18 +1,20 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pool from "../db/pool.js";
+import { badRequest, isStrongPassword, normalizeEmail } from "../utils/validation.js";
 
 export async function login(req, res) {
   try {
     const JWT_SECRET = process.env.JWT_SECRET;
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body.email);
+    const { password } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ error: "Email and password are required" });
     }
 
     const { rows } = await pool.query(
-      "SELECT id, email, password, role FROM users WHERE email = $1 LIMIT 1",
+      "SELECT id, email, password, role, username, is_active, first_name, last_name FROM users WHERE email = $1 LIMIT 1",
       [email]
     );
 
@@ -21,6 +23,9 @@ export async function login(req, res) {
     }
 
     const user = rows[0];
+    if (user.is_active === false) {
+      return res.status(403).json({ error: "Your account is inactive" });
+    }
 
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
@@ -43,6 +48,8 @@ export async function login(req, res) {
         id: user.id,
         email: user.email,
         role: user.role,
+        username: user.username,
+        name: [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || user.username,
       },
     });
   } catch (err) {
@@ -53,16 +60,20 @@ export async function login(req, res) {
 
 export async function register(req, res) {
   try {
-    const { username, email, password } = req.body;
+    const { username, password } = req.body;
+    const email = normalizeEmail(req.body.email);
 
-    // 1️⃣ Basic validation
     if (!username || !email || !password) {
-      return res.status(400).json({
-        error: "Username, email and password are required",
-      });
+      return badRequest(res, "Username, email and password are required");
     }
 
-    // 2️⃣ Check existing user (email or username)
+    if (!isStrongPassword(password)) {
+      return badRequest(
+        res,
+        "Password must be at least 8 characters and include upper, lower, number, and special character"
+      );
+    }
+
     const existingUser = await pool.query(
       `SELECT id FROM users WHERE email = $1 OR username = $2 LIMIT 1`,
       [email, username]
@@ -74,11 +85,8 @@ export async function register(req, res) {
       });
     }
 
-    // 3️⃣ Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // 4️⃣ Insert admin user
     const { rows } = await pool.query(
       `INSERT INTO users (username, email, password, role)
        VALUES ($1, $2, $3, $4)
@@ -86,7 +94,6 @@ export async function register(req, res) {
       [username, email, hashedPassword, "admin"]
     );
 
-    // 5️⃣ Response
     res.status(201).json({
       message: "Admin registered successfully",
       user: rows[0],
@@ -94,7 +101,6 @@ export async function register(req, res) {
   } catch (err) {
     console.error("Register error:", err);
 
-    // Handle unique constraint violation (extra safety)
     if (err.code === "23505") {
       return res.status(409).json({
         error: "Username or email already exists",
@@ -104,4 +110,3 @@ export async function register(req, res) {
     res.status(500).json({ error: "Internal server error" });
   }
 }
-

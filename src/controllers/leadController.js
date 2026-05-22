@@ -1,33 +1,68 @@
 import pool from "../db/pool.js";
 import { processDueFollowUps } from "../services/followupService.js";
+import {
+  badRequest,
+  cleanOptionalString,
+  isValidEmail,
+  normalizeEmail,
+  normalizePhone,
+  parseInteger,
+  parseNumber,
+} from "../utils/validation.js";
 
-/**
- * CREATE LEAD
- */
+function buildFollowUpTimestamp(date, time) {
+  if (!date) return null;
+  return `${date}T${time || "00:00"}`;
+}
+
+function parseLeadPayload(body = {}) {
+  const email = normalizeEmail(body.email);
+  const mobile = normalizePhone(body.mobile);
+
+  return {
+    fname: cleanOptionalString(body.fname),
+    lname: cleanOptionalString(body.lname),
+    designation: cleanOptionalString(body.designation),
+    organization: cleanOptionalString(body.organization),
+    email,
+    mobile,
+    tel1: normalizePhone(body.tel1),
+    tel2: normalizePhone(body.tel2),
+    website: cleanOptionalString(body.website),
+    address: cleanOptionalString(body.address),
+    notes: cleanOptionalString(body.notes),
+    list_id: parseInteger(body.list_id),
+    productGroup: cleanOptionalString(body.productGroup ?? body.product_group),
+    customerGroup: cleanOptionalString(body.customerGroup ?? body.customer_group),
+    tags: Array.isArray(body.tags) ? body.tags.filter(Boolean) : [],
+    dealSize: parseNumber(body.dealSize ?? body.deal_size),
+    leadPotential: cleanOptionalString(body.leadPotential ?? body.lead_potential),
+    leadStage: cleanOptionalString(body.leadStage ?? body.lead_stage),
+    assignedTo: cleanOptionalString(body.assignedTo ?? body.assigned_to),
+    followUpDate: buildFollowUpTimestamp(
+      body.followUpDate ?? body.follow_up_date,
+      body.followUpTime ?? body.follow_up_time
+    ),
+    repeatFollowUp: Boolean(body.repeatFollowUp ?? body.repeat_follow_up),
+    repeatInterval: cleanOptionalString(body.repeatInterval ?? body.repeat_interval),
+    followUpNotes: cleanOptionalString(body.followUpNotes ?? body.follow_up_notes),
+    doNotFollowUp: Boolean(body.doNotFollowUp ?? body.do_not_follow_up),
+    doNotFollowUpReason: cleanOptionalString(body.doNotFollowUpReason ?? body.do_not_follow_up_reason),
+    customFieldsData:
+      body.customFieldsData && typeof body.customFieldsData === "object" ? body.customFieldsData : {},
+  };
+}
+
 export const createLead = async (req, res) => {
   try {
     const user_id = req.user.id;
+    const payload = parseLeadPayload(req.body);
 
-    const {
-      fname,
-      lname,
-      designation,
-      organization,
-      email,
-      mobile,
-      tel1,
-      tel2,
-      website,
-      address,
-      notes,
-      list_id
-    } = req.body;
-
-    if (!fname || !mobile || !list_id) {
-      return res.status(400).json({
-        success: false,
-        message: "First name, mobile, and list_id are required"
-      });
+    if (!payload.fname || !payload.mobile || !payload.list_id) {
+      return badRequest(res, "First name, mobile, and list are required");
+    }
+    if (payload.email && !isValidEmail(payload.email)) {
+      return badRequest(res, "A valid email address is required");
     }
 
     const listCheck = await pool.query(
@@ -35,35 +70,31 @@ export const createLead = async (req, res) => {
        FROM lists l
        INNER JOIN users u ON u.id = $2
        WHERE l.id = $1 AND (l.owner_id = $2 OR u.role = 'admin')`,
-      [list_id, user_id]
+      [payload.list_id, user_id]
     );
 
     if (listCheck.rowCount === 0) {
       return res.status(403).json({
         success: false,
-        message: "You don't have permission to add leads to this list"
+        message: "You don't have permission to add leads to this list",
       });
     }
 
-    const { productGroup, customerGroup, tags, dealSize, leadPotential, leadStage } = req.body;
+    const duplicateCheck = await pool.query(
+      `SELECT id
+       FROM leads
+       WHERE list_id = $1
+         AND (($2::text IS NOT NULL AND mobile = $2) OR ($3::text IS NOT NULL AND email = $3))
+       LIMIT 1`,
+      [payload.list_id, payload.mobile, payload.email]
+    );
 
-    // Support both snake_case (backend) and camelCase (frontend) field naming
-    const assigned_to = req.body.assigned_to || req.body.assignedTo || null;
-
-    const follow_up_date = req.body.follow_up_date || (() => {
-      if (req.body.followUpDate) {
-        const time = req.body.followUpTime || "00:00";
-        return `${req.body.followUpDate}T${time}`;
-      }
-      return null;
-    })();
-
-    const repeat_follow_up =
-      req.body.repeat_follow_up ?? req.body.repeatFollowUp ?? false;
-    const repeat_interval =
-      req.body.repeat_interval || req.body.repeatInterval || null;
-    const follow_up_notes =
-      req.body.follow_up_notes || req.body.followUpNotes || null;
+    if (duplicateCheck.rowCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "A lead with this mobile or email already exists in the selected list",
+      });
+    }
 
     const result = await pool.query(
       `INSERT INTO leads (
@@ -72,55 +103,50 @@ export const createLead = async (req, res) => {
         product_group, customer_group, tags,
         deal_size, lead_potential, lead_stage,
         assigned_to, follow_up_date, repeat_follow_up,
-        repeat_interval, follow_up_notes
+        repeat_interval, follow_up_notes, do_not_follow_up,
+        do_not_follow_up_reason, custom_fields_data
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-        $13,$14,$15,
-        $16,$17,$18,
-        $19,$20,$21,$22,$23
+        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
       )
       RETURNING *`,
       [
-        fname,
-        lname || null,
-        designation || null,
-        organization || null,
-        email || null,
-        mobile,
-        tel1 || null,
-        tel2 || null,
-        website || null,
-        address || null,
-        notes || null,
-        list_id,
-
-        productGroup || null,
-        customerGroup || null,
-        Array.isArray(tags) ? tags : null,
-
-        dealSize || null,
-        leadPotential || null,
-        leadStage || null,
-
-        assigned_to,
-        follow_up_date || null,
-        repeat_follow_up,
-        repeat_interval || null,
-        follow_up_notes || null
+        payload.fname,
+        payload.lname,
+        payload.designation,
+        payload.organization,
+        payload.email,
+        payload.mobile,
+        payload.tel1,
+        payload.tel2,
+        payload.website,
+        payload.address,
+        payload.notes,
+        payload.list_id,
+        payload.productGroup,
+        payload.customerGroup,
+        payload.tags.length ? payload.tags : null,
+        payload.dealSize,
+        payload.leadPotential,
+        payload.leadStage,
+        payload.assignedTo,
+        payload.followUpDate,
+        payload.repeatFollowUp,
+        payload.repeatInterval,
+        payload.followUpNotes,
+        payload.doNotFollowUp,
+        payload.doNotFollowUpReason,
+        payload.customFieldsData,
       ]
     );
 
     res.status(201).json({ success: true, data: result.rows[0] });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead creation failed" });
   }
 };
 
-/**
- * GET LEADS BY LIST ID
- */
 export const getLeadsByListId = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -137,7 +163,7 @@ export const getLeadsByListId = async (req, res) => {
     if (listCheck.rowCount === 0) {
       return res.status(403).json({
         success: false,
-        message: "You don't have permission to view leads from this list"
+        message: "You don't have permission to view leads from this list",
       });
     }
 
@@ -150,16 +176,12 @@ export const getLeadsByListId = async (req, res) => {
     );
 
     res.json({ success: true, data: result.rows });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Failed to fetch leads" });
   }
 };
 
-/**
- * ✅ GET ALL LEADS (ADMIN FIX)
- */
 export const getAllLeads = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -189,16 +211,12 @@ export const getAllLeads = async (req, res) => {
     const result = await pool.query(query, params);
 
     res.json({ success: true, data: result.rows });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Failed to fetch leads" });
   }
 };
 
-/**
- * GET LEAD BY ID
- */
 export const getLeadById = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -241,23 +259,19 @@ export const getLeadById = async (req, res) => {
     }
 
     res.json({ success: true, data: result.rows[0] });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Failed to fetch lead" });
   }
 };
 
-/**
- * UPDATE LEAD
- */
 export const updateLead = async (req, res) => {
   try {
     const user_id = req.user.id;
     const user_role = req.user.role;
     const { id } = req.params;
+    const payload = parseLeadPayload(req.body);
 
-    // Only admins, list owners, or the assigned user can update a lead.
     if (user_role !== "admin") {
       const leadPermissions = await pool.query(
         `SELECT ld.assigned_to, l.owner_id
@@ -272,98 +286,92 @@ export const updateLead = async (req, res) => {
       }
 
       const { assigned_to, owner_id } = leadPermissions.rows[0];
-
       if (owner_id !== user_id && assigned_to !== user_id) {
         return res.status(403).json({
           success: false,
-          message: "You don't have permission to update this lead"
+          message: "You don't have permission to update this lead",
         });
       }
     }
 
-    // Support both snake_case (backend) and camelCase (frontend) field naming
-    const assigned_to = req.body.assigned_to || req.body.assignedTo || null;
-
-    const follow_up_date = req.body.follow_up_date || (() => {
-      if (req.body.followUpDate) {
-        const time = req.body.followUpTime || "00:00";
-        return `${req.body.followUpDate}T${time}`;
-      }
-      return null;
-    })();
-
-    const repeat_follow_up =
-      req.body.repeat_follow_up ?? req.body.repeatFollowUp ?? false;
-    const repeat_interval =
-      req.body.repeat_interval || req.body.repeatInterval || null;
-    const follow_up_notes =
-      req.body.follow_up_notes || req.body.followUpNotes || null;
+    if (!payload.fname || !payload.mobile) {
+      return badRequest(res, "First name and mobile are required");
+    }
+    if (payload.email && !isValidEmail(payload.email)) {
+      return badRequest(res, "A valid email address is required");
+    }
 
     const result = await pool.query(
       `UPDATE leads SET
-        fname = COALESCE($1, fname),
-        lname = COALESCE($2, lname),
-        designation = COALESCE($3, designation),
-        organization = COALESCE($4, organization),
-        email = COALESCE($5, email),
-        mobile = COALESCE($6, mobile),
-        tel1 = COALESCE($7, tel1),
-        tel2 = COALESCE($8, tel2),
-        website = COALESCE($9, website),
-        address = COALESCE($10, address),
-        notes = COALESCE($11, notes),
-        deal_size = COALESCE($12, deal_size),
-        lead_potential = COALESCE($13, lead_potential),
-        lead_stage = COALESCE($14, lead_stage),
-        product_group = COALESCE($15, product_group),
-        customer_group = COALESCE($16, customer_group),
-        tags = COALESCE($17, tags),
-        assigned_to = COALESCE($18, assigned_to),
-        follow_up_date = COALESCE($19, follow_up_date),
-        repeat_follow_up = COALESCE($20, repeat_follow_up),
-        repeat_interval = COALESCE($21, repeat_interval),
-        follow_up_notes = COALESCE($22, follow_up_notes),
+        fname = $1,
+        lname = $2,
+        designation = $3,
+        organization = $4,
+        email = $5,
+        mobile = $6,
+        tel1 = $7,
+        tel2 = $8,
+        website = $9,
+        address = $10,
+        notes = $11,
+        deal_size = $12,
+        lead_potential = $13,
+        lead_stage = $14,
+        product_group = $15,
+        customer_group = $16,
+        tags = $17,
+        assigned_to = $18,
+        follow_up_date = $19,
+        repeat_follow_up = $20,
+        repeat_interval = $21,
+        follow_up_notes = $22,
+        do_not_follow_up = $23,
+        do_not_follow_up_reason = $24,
+        custom_fields_data = $25::jsonb,
         updated_at = NOW()
-       WHERE id = $23
+       WHERE id = $26
        RETURNING *`,
       [
-        req.body.fname || null,
-        req.body.lname || null,
-        req.body.designation || null,
-        req.body.organization || null,
-        req.body.email || null,
-        req.body.mobile || null,
-        req.body.tel1 || null,
-        req.body.tel2 || null,
-        req.body.website || null,
-        req.body.address || null,
-        req.body.notes || null,
-        req.body.dealSize || null,
-        req.body.leadPotential || null,
-        req.body.leadStage || null,
-        req.body.productGroup || null,
-        req.body.customerGroup || null,
-        req.body.tags && req.body.tags.length ? req.body.tags : null,
-        assigned_to,
-        follow_up_date || null,
-        repeat_follow_up,
-        repeat_interval || null,
-        follow_up_notes || null,
-        id
+        payload.fname,
+        payload.lname,
+        payload.designation,
+        payload.organization,
+        payload.email,
+        payload.mobile,
+        payload.tel1,
+        payload.tel2,
+        payload.website,
+        payload.address,
+        payload.notes,
+        payload.dealSize,
+        payload.leadPotential,
+        payload.leadStage,
+        payload.productGroup,
+        payload.customerGroup,
+        payload.tags.length ? payload.tags : [],
+        payload.assignedTo,
+        payload.followUpDate,
+        payload.repeatFollowUp,
+        payload.repeatInterval,
+        payload.followUpNotes,
+        payload.doNotFollowUp,
+        payload.doNotFollowUpReason,
+        payload.customFieldsData,
+        id,
       ]
     );
 
-    res.json({ success: true, data: result.rows[0] });
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "Lead not found" });
+    }
 
+    res.json({ success: true, data: result.rows[0] });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead update failed" });
   }
 };
 
-/**
- * DELETE LEAD
- */
 export const deleteLead = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -381,23 +389,18 @@ export const deleteLead = async (req, res) => {
     if (ownershipCheck.rowCount === 0) {
       return res.status(403).json({
         success: false,
-        message: "You don't have permission to delete this lead"
+        message: "You don't have permission to delete this lead",
       });
     }
 
     await pool.query(`DELETE FROM leads WHERE id = $1`, [id]);
-
     res.json({ success: true, message: "Lead deleted successfully" });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead deletion failed" });
   }
 };
 
-/**
- * 🔍 SEARCH LEADS (RESTORED EXPORT)
- */
 export const searchLeads = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -407,7 +410,7 @@ export const searchLeads = async (req, res) => {
     if (!query || query.trim().length < 2) {
       return res.status(400).json({
         success: false,
-        message: "Query must be at least 2 characters"
+        message: "Query must be at least 2 characters",
       });
     }
 
@@ -449,18 +452,13 @@ export const searchLeads = async (req, res) => {
     }
 
     const result = await pool.query(sql, params);
-
     res.json({ success: true, data: result.rows });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead search failed" });
   }
 };
 
-/**
- * TRIGGER DUE FOLLOW-UPS (can be used for manual trigger/testing)
- */
 export const triggerFollowUps = async (req, res) => {
   try {
     await processDueFollowUps();

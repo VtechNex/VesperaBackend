@@ -41,7 +41,7 @@ export const updateUser = async (req, res) => {
        SET username = $1,
            email = $2,
            role = $3,
-           is_active = $4,
+           is_active = COALESCE($4, is_active),
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $5
        RETURNING id, username, email, role, is_active`,
