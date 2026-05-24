@@ -1,6 +1,7 @@
 import pool from "../db/pool.js";
 import bcrypt from "bcrypt";
 import { normalizeUserRole, ROLES } from "../middleware/security.js";
+import { badRequest, validateManagedUserPayload } from "../utils/validation.js";
 
 function sanitizeManagedUser(row) {
   return {
@@ -21,16 +22,23 @@ function sanitizeManagedUser(row) {
  */
 export const createUser = async (req, res) => {
   try {
-    const { username, email, password, role, firstName, lastName, isActive } = req.body;
-    const normalizedRole = normalizeUserRole(role || ROLES.L2);
-
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const payload = validateManagedUserPayload(req.body, { requirePassword: true });
+    const normalizedRole = normalizeUserRole(payload.role || ROLES.L2);
+    const hashedPassword = await bcrypt.hash(payload.password, 10);
 
     const result = await pool.query(
       `INSERT INTO users (username, email, password, role, first_name, last_name, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, username, email, role, is_active, created_at, first_name, last_name`,
-      [username, email, hashedPassword, normalizedRole, firstName || null, lastName || null, isActive !== false]
+      [
+        payload.username,
+        payload.email,
+        hashedPassword,
+        normalizedRole,
+        payload.firstName,
+        payload.lastName,
+        payload.isActive,
+      ]
     );
 
     res.status(201).json({
@@ -40,6 +48,14 @@ export const createUser = async (req, res) => {
 
   } catch (err) {
     console.error(err);
+    if (err instanceof Error) {
+      if (err.message.includes("required") || err.message.includes("valid") || err.message.includes("Password")) {
+        return badRequest(res, err.message);
+      }
+    }
+    if (err.code === "23505") {
+      return res.status(409).json({ success: false, message: "Username or email already exists" });
+    }
     res.status(500).json({ success: false, message: "User creation failed" });
   }
 };
@@ -50,8 +66,8 @@ export const createUser = async (req, res) => {
 export const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { username, email, role, is_active, firstName, lastName } = req.body;
-    const normalizedRole = normalizeUserRole(role || ROLES.L2);
+    const payload = validateManagedUserPayload(req.body, { requirePassword: false });
+    const normalizedRole = normalizeUserRole(payload.role || ROLES.L2);
 
     const result = await pool.query(
       `UPDATE users
@@ -64,7 +80,7 @@ export const updateUser = async (req, res) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $7
        RETURNING id, username, email, role, is_active, created_at, first_name, last_name`,
-      [username, email, normalizedRole, is_active, firstName || null, lastName || null, id]
+      [payload.username, payload.email, normalizedRole, payload.isActive, payload.firstName, payload.lastName, id]
     );
 
     if (result.rowCount === 0) {
@@ -75,6 +91,14 @@ export const updateUser = async (req, res) => {
 
   } catch (err) {
     console.error(err);
+    if (err instanceof Error) {
+      if (err.message.includes("required") || err.message.includes("valid")) {
+        return badRequest(res, err.message);
+      }
+    }
+    if (err.code === "23505") {
+      return res.status(409).json({ success: false, message: "Username or email already exists" });
+    }
     res.status(500).json({ success: false, message: "User update failed" });
   }
 };

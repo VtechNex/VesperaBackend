@@ -16,7 +16,8 @@ router.get("/all", async (req, res) => {
     const result = await getProperties(page, limit, req.query);
     res.json({ success: true, ...result });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    const status = error?.message?.includes("must be") ? 400 : 500;
+    res.status(status).json({ success: false, error: error.message });
   }
 });
 

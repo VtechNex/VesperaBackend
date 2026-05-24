@@ -1,16 +1,17 @@
 import express from "express";
-import { getProperties, getPropertyById } from "../controllers/globalController.js";
+import { getProperties, getPropertyById, getPublicPropertyFilters } from "../controllers/globalController.js";
 
 const router = express.Router();
 
 router.get("/properties/all", async (req, res) => {
     try {
         const { page = 1, limit = 20 } = req.query;
-        const filters = req.body || {};
+        const filters = getPublicPropertyFilters(req.query, req.body || {});
         const { data, pagination } = await getProperties(page, limit, filters);
         res.json({ data, pagination });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        const status = error?.message?.includes("must be") ? 400 : 500;
+        res.status(status).json({ error: error.message });
     }
 });
 

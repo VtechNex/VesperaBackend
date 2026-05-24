@@ -1,9 +1,6 @@
 import pool from "../db/pool.js";
 import { hasPermissionForRole } from "../middleware/security.js";
-
-function isAdmin(req) {
-  return hasPermissionForRole(req.user?.role, "canManageUsers");
-}
+import { badRequest, cleanOptionalLimitedString, cleanRequiredString, validateListPayload } from "../utils/validation.js";
 
 /**
  * CREATE LIST
@@ -14,16 +11,12 @@ export const createList = async (req, res) => {
       return res.status(403).json({ success: false, message: "You do not have permission to create lists." });
     }
 
-    const { name, description, list_owner } = req.body;
-
-    if (!name || !list_owner) {
-      return res.status(400).json({ success: false, message: "List name and owner are required" });
-    }
+    const payload = validateListPayload(req.body, { requireOwner: true });
 
     // Find user by username to get owner_id
     const userResult = await pool.query(
       `SELECT id FROM users WHERE username = $1`,
-      [list_owner]
+      [payload.list_owner]
     );
 
     if (userResult.rows.length === 0) {
@@ -36,7 +29,7 @@ export const createList = async (req, res) => {
       `INSERT INTO lists (name, owner_id, description)
        VALUES ($1, $2, $3)
        RETURNING id, name, owner_id, description, created_at`,
-      [name, owner_id, description || null]
+      [payload.name, owner_id, payload.description]
     );
 
     res.status(201).json({
@@ -46,6 +39,9 @@ export const createList = async (req, res) => {
 
   } catch (err) {
     console.error(err);
+    if (err instanceof Error) {
+      return badRequest(res, err.message);
+    }
     res.status(500).json({ success: false, message: "List creation failed" });
   }
 };
@@ -119,7 +115,11 @@ export const updateList = async (req, res) => {
     }
 
     const { id } = req.params;
-    const { name, subject, description } = req.body;
+    const payload = {
+      name: req.body.name === undefined ? null : cleanRequiredString(req.body.name, "List name", 150),
+      subject: req.body.subject === undefined ? null : cleanOptionalLimitedString(req.body.subject, 150),
+      description: req.body.description === undefined ? null : cleanOptionalLimitedString(req.body.description, 1000),
+    };
 
     const result = await pool.query(
       `UPDATE lists
@@ -128,7 +128,12 @@ export const updateList = async (req, res) => {
            description = COALESCE($3, description)
        WHERE id = $4
        RETURNING id, name, owner_id, subject, description, created_at`,
-      [name || null, subject || null, description || null, id]
+      [
+        req.body.name === undefined ? null : payload.name,
+        req.body.subject === undefined ? null : payload.subject,
+        req.body.description === undefined ? null : payload.description,
+        id,
+      ]
     );
 
     if (result.rowCount === 0) {
@@ -142,6 +147,9 @@ export const updateList = async (req, res) => {
 
   } catch (err) {
     console.error(err);
+    if (err instanceof Error) {
+      return badRequest(res, err.message);
+    }
     res.status(500).json({ success: false, message: "List update failed" });
   }
 };

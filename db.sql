@@ -83,6 +83,18 @@ CREATE TABLE leads (
         ON DELETE SET NULL
 );
 
+CREATE TABLE company_profile_settings (
+    profile_key VARCHAR(80) PRIMARY KEY,
+    primary_contact JSONB NOT NULL DEFAULT '{}'::jsonb,
+    branding JSONB NOT NULL DEFAULT '{}'::jsonb,
+    locale JSONB NOT NULL DEFAULT '{}'::jsonb,
+    account_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    sales_org_configured BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE qualifiers (
     id          BIGSERIAL PRIMARY KEY,
     name        VARCHAR(150) NOT NULL,

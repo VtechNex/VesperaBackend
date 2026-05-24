@@ -1,5 +1,5 @@
 import pool from "../db/pool.js";
-import { cleanOptionalString, parseInteger, parseNumber } from "../utils/validation.js";
+import { cleanOptionalString, parseInteger, parseNumber, validatePropertyFilters } from "../utils/validation.js";
 
 function getPropertyCategory(type) {
   const normalized = String(type || "").trim().toLowerCase();
@@ -120,63 +120,70 @@ async function getProperties(page = 1, limit = 20, filters = {}) {
   const safePage = Math.max(Number(page) || 1, 1);
   const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
   const offset = (safePage - 1) * safeLimit;
+  const normalizedFilters = validatePropertyFilters(filters);
 
   let baseQuery = "FROM properties";
   const conditions = [];
   const values = [];
   let index = 1;
 
-  if (filters.search) {
+  if (normalizedFilters.search) {
     conditions.push(`(title ILIKE $${index} OR description ILIKE $${index} OR location ILIKE $${index})`);
-    values.push(`%${filters.search}%`);
+    values.push(`%${normalizedFilters.search}%`);
     index++;
   }
 
-  if (filters.beds !== undefined) {
+  if (normalizedFilters.location) {
+    conditions.push(`location ILIKE $${index}`);
+    values.push(`%${normalizedFilters.location}%`);
+    index++;
+  }
+
+  if (normalizedFilters.beds !== undefined) {
     conditions.push(`beds >= $${index}`);
-    values.push(filters.beds);
+    values.push(normalizedFilters.beds);
     index++;
   }
 
-  if (filters.baths !== undefined) {
+  if (normalizedFilters.baths !== undefined) {
     conditions.push(`baths >= $${index}`);
-    values.push(filters.baths);
+    values.push(normalizedFilters.baths);
     index++;
   }
 
-  if (filters.minSqft !== undefined) {
+  if (normalizedFilters.minSqft !== undefined) {
     conditions.push(`sqft >= $${index}`);
-    values.push(filters.minSqft);
+    values.push(normalizedFilters.minSqft);
     index++;
   }
 
-  if (filters.maxSqft !== undefined) {
+  if (normalizedFilters.maxSqft !== undefined) {
     conditions.push(`sqft <= $${index}`);
-    values.push(filters.maxSqft);
+    values.push(normalizedFilters.maxSqft);
     index++;
   }
 
-  if (filters.minPrice !== undefined) {
+  if (normalizedFilters.minPrice !== undefined) {
     conditions.push(`price >= $${index}`);
-    values.push(filters.minPrice);
+    values.push(normalizedFilters.minPrice);
     index++;
   }
 
-  if (filters.maxPrice !== undefined) {
+  if (normalizedFilters.maxPrice !== undefined) {
     conditions.push(`price <= $${index}`);
-    values.push(filters.maxPrice);
+    values.push(normalizedFilters.maxPrice);
     index++;
   }
 
-  if (filters.type) {
+  if (normalizedFilters.type) {
     conditions.push(`type = $${index}`);
-    values.push(String(filters.type).toLowerCase());
+    values.push(String(normalizedFilters.type).toLowerCase());
     index++;
   }
 
-  if (filters.sale !== undefined && filters.sale !== "") {
+  if (normalizedFilters.sale !== undefined && normalizedFilters.sale !== "") {
     conditions.push(`sale = $${index}`);
-    values.push(filters.sale === true || filters.sale === "true");
+    values.push(normalizedFilters.sale === true || normalizedFilters.sale === "true");
     index++;
   }
 

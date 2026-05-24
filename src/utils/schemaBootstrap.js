@@ -66,6 +66,17 @@ const statements = [
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS company_profile_settings (
+    profile_key VARCHAR(80) PRIMARY KEY,
+    primary_contact JSONB NOT NULL DEFAULT '{}'::jsonb,
+    branding JSONB NOT NULL DEFAULT '{}'::jsonb,
+    locale JSONB NOT NULL DEFAULT '{}'::jsonb,
+    account_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    sales_org_configured BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
   `CREATE TABLE IF NOT EXISTS custom_fields (
     id BIGSERIAL PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -1,7 +1,7 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pool from "../db/pool.js";
-import { badRequest, isStrongPassword, normalizeEmail } from "../utils/validation.js";
+import { badRequest, cleanRequiredString, isStrongPassword, isValidEmail, normalizeEmail } from "../utils/validation.js";
 import { normalizeUserRole, ROLES } from "../middleware/security.js";
 
 export async function login(req, res) {
@@ -61,11 +61,15 @@ export async function login(req, res) {
 
 export async function register(req, res) {
   try {
-    const { username, password } = req.body;
+    const { password } = req.body;
+    const username = cleanRequiredString(req.body.username, "Username", 80);
     const email = normalizeEmail(req.body.email);
 
     if (!username || !email || !password) {
       return badRequest(res, "Username, email and password are required");
+    }
+    if (!isValidEmail(email)) {
+      return badRequest(res, "A valid email address is required");
     }
 
     if (!isStrongPassword(password)) {
@@ -108,6 +112,9 @@ export async function register(req, res) {
     });
   } catch (err) {
     console.error("Register error:", err);
+    if (err instanceof Error && err.message.includes("required")) {
+      return badRequest(res, err.message);
+    }
 
     if (err.code === "23505") {
       return res.status(409).json({

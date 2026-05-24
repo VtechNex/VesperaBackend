@@ -2,12 +2,13 @@ import bcrypt from "bcrypt";
 import pool from "../db/pool.js";
 import {
   badRequest,
-  cleanOptionalString,
   coerceBoolean,
   isNonEmptyString,
   isStrongPassword,
   isValidEmail,
   normalizeEmail,
+  validateCompanyProfilePayload,
+  validateCustomFieldPayload,
 } from "../utils/validation.js";
 import { normalizeUserRole } from "../middleware/security.js";
 
@@ -204,30 +205,75 @@ const defaultCompanyProfile = {
   salesOrgConfigured: false,
 };
 
+const COMPANY_PROFILE_KEY = "vespera-estates";
+
+async function loadGlobalCompanyProfile() {
+  const result = await pool.query(
+    `SELECT primary_contact, branding, locale, account_settings, sales_org_configured
+     FROM company_profile_settings
+     WHERE profile_key = $1
+     LIMIT 1`,
+    [COMPANY_PROFILE_KEY]
+  );
+
+  if (result.rowCount > 0) {
+    return result.rows[0];
+  }
+
+  const legacyResult = await pool.query(
+    `SELECT primary_contact, branding, locale, account_settings, sales_org_configured
+     FROM company_profiles
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 1`
+  );
+
+  if (legacyResult.rowCount === 0) {
+    return null;
+  }
+
+  const legacyRow = legacyResult.rows[0];
+  await pool.query(
+    `INSERT INTO company_profile_settings (
+       profile_key, primary_contact, branding, locale, account_settings, sales_org_configured
+     ) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6)
+     ON CONFLICT (profile_key) DO UPDATE SET
+       primary_contact = EXCLUDED.primary_contact,
+       branding = EXCLUDED.branding,
+       locale = EXCLUDED.locale,
+       account_settings = EXCLUDED.account_settings,
+       sales_org_configured = EXCLUDED.sales_org_configured,
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      COMPANY_PROFILE_KEY,
+      legacyRow.primary_contact || {},
+      legacyRow.branding || {},
+      legacyRow.locale || {},
+      legacyRow.account_settings || {},
+      legacyRow.sales_org_configured || false,
+    ]
+  );
+
+  return legacyRow;
+}
+
+function mapCompanyProfileRow(row) {
+  return {
+    primaryContact: row?.primary_contact || {},
+    branding: row?.branding || {},
+    locale: row?.locale || {},
+    accountSettings: row?.account_settings || {},
+    salesOrgConfigured: row?.sales_org_configured || false,
+  };
+}
+
 export async function getCompanyProfile(req, res) {
   try {
-    const result = await pool.query(
-      `SELECT primary_contact, branding, locale, account_settings, sales_org_configured
-       FROM company_profiles
-       WHERE user_id = $1`,
-      [req.user.id]
-    );
-
-    if (result.rowCount === 0) {
+    const row = await loadGlobalCompanyProfile();
+    if (!row) {
       return res.json({ success: true, data: defaultCompanyProfile });
     }
 
-    const row = result.rows[0];
-    return res.json({
-      success: true,
-      data: {
-        primaryContact: row.primary_contact || {},
-        branding: row.branding || {},
-        locale: row.locale || {},
-        accountSettings: row.account_settings || {},
-        salesOrgConfigured: row.sales_org_configured || false,
-      },
-    });
+    return res.json({ success: true, data: mapCompanyProfileRow(row) });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ success: false, message: "Failed to fetch company profile" });
@@ -236,50 +282,38 @@ export async function getCompanyProfile(req, res) {
 
 export async function upsertCompanyProfile(req, res) {
   try {
-    const primaryContact = req.body.primaryContact || {};
-    const branding = req.body.branding || {};
-    const locale = req.body.locale || {};
-    const accountSettings = req.body.accountSettings || {};
-    const salesOrgConfigured = coerceBoolean(req.body.salesOrgConfigured);
-
-    if (!isNonEmptyString(primaryContact.firstName) || !isNonEmptyString(primaryContact.lastName)) {
-      return badRequest(res, "Primary contact first name and last name are required");
-    }
-    if (!isValidEmail(primaryContact.email)) {
-      return badRequest(res, "Primary contact email is invalid");
-    }
-    if (!isNonEmptyString(primaryContact.orgName)) {
-      return badRequest(res, "Organization name is required");
-    }
+    const payload = validateCompanyProfilePayload(req.body);
 
     const result = await pool.query(
-      `INSERT INTO company_profiles (
-         user_id, primary_contact, branding, locale, account_settings, sales_org_configured
-       ) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6)
-       ON CONFLICT (user_id) DO UPDATE SET
+      `INSERT INTO company_profile_settings (
+         profile_key, primary_contact, branding, locale, account_settings, sales_org_configured, updated_by
+       ) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
+       ON CONFLICT (profile_key) DO UPDATE SET
          primary_contact = EXCLUDED.primary_contact,
          branding = EXCLUDED.branding,
          locale = EXCLUDED.locale,
          account_settings = EXCLUDED.account_settings,
          sales_org_configured = EXCLUDED.sales_org_configured,
+         updated_by = EXCLUDED.updated_by,
          updated_at = CURRENT_TIMESTAMP
        RETURNING primary_contact, branding, locale, account_settings, sales_org_configured`,
-      [req.user.id, primaryContact, branding, locale, accountSettings, salesOrgConfigured]
+      [
+        COMPANY_PROFILE_KEY,
+        payload.primaryContact,
+        payload.branding,
+        payload.locale,
+        payload.accountSettings,
+        payload.salesOrgConfigured,
+        req.user.id,
+      ]
     );
 
-    const row = result.rows[0];
-    return res.json({
-      success: true,
-      data: {
-        primaryContact: row.primary_contact,
-        branding: row.branding,
-        locale: row.locale,
-        accountSettings: row.account_settings,
-        salesOrgConfigured: row.sales_org_configured,
-      },
-    });
+    return res.json({ success: true, data: mapCompanyProfileRow(result.rows[0]) });
   } catch (error) {
     console.error(error);
+    if (error instanceof Error) {
+      return badRequest(res, error.message);
+    }
     return res.status(500).json({ success: false, message: "Failed to save company profile" });
   }
 }
@@ -289,9 +323,7 @@ export async function getCustomFields(req, res) {
     const result = await pool.query(
       `SELECT id, name, type, values, mandatory, lists, created_at, updated_at
        FROM custom_fields
-       WHERE user_id = $1
        ORDER BY created_at DESC`,
-      [req.user.id]
     );
 
     return res.json({
@@ -313,28 +345,41 @@ export async function getCustomFields(req, res) {
   }
 }
 
-function normalizeCustomFieldPayload(body) {
-  const values = Array.isArray(body.values)
-    ? body.values
-    : String(body.values || "")
-        .split(/\r?\n|,/)
-        .map((item) => item.trim())
-        .filter(Boolean);
+export async function getCustomFieldsFormMetadata(req, res) {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, type, values, mandatory, lists, updated_at
+       FROM custom_fields
+       ORDER BY created_at DESC`
+    );
 
-  return {
-    name: cleanOptionalString(body.name),
-    type: cleanOptionalString(body.type),
-    values,
-    mandatory: coerceBoolean(body.mandatory),
-    lists: Array.isArray(body.lists) ? body.lists.filter(Boolean) : [],
-  };
+    return res.json({
+      success: true,
+      data: result.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        values: Array.isArray(row.values) ? row.values : [],
+        mandatory: Boolean(row.mandatory),
+        lists: Array.isArray(row.lists) ? row.lists : [],
+        updated_at: row.updated_at,
+      })),
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Failed to fetch custom field metadata" });
+  }
 }
 
 export async function createCustomField(req, res) {
   try {
-    const payload = normalizeCustomFieldPayload(req.body);
-    if (!payload.name || !payload.type) {
-      return badRequest(res, "Field name and type are required");
+    const payload = validateCustomFieldPayload(req.body);
+    const duplicate = await pool.query(
+      `SELECT id FROM custom_fields WHERE lower(name) = lower($1) LIMIT 1`,
+      [payload.name]
+    );
+    if (duplicate.rowCount > 0) {
+      return res.status(409).json({ success: false, message: "A custom field with this name already exists" });
     }
 
     const result = await pool.query(
@@ -347,8 +392,8 @@ export async function createCustomField(req, res) {
     return res.status(201).json({ success: true, data: result.rows[0] });
   } catch (error) {
     console.error(error);
-    if (error.code === "23505") {
-      return res.status(409).json({ success: false, message: "A custom field with this name already exists" });
+    if (error instanceof Error) {
+      return badRequest(res, error.message);
     }
     return res.status(500).json({ success: false, message: "Failed to create custom field" });
   }
@@ -356,9 +401,13 @@ export async function createCustomField(req, res) {
 
 export async function updateCustomField(req, res) {
   try {
-    const payload = normalizeCustomFieldPayload(req.body);
-    if (!payload.name || !payload.type) {
-      return badRequest(res, "Field name and type are required");
+    const payload = validateCustomFieldPayload(req.body);
+    const duplicate = await pool.query(
+      `SELECT id FROM custom_fields WHERE lower(name) = lower($1) AND id <> $2 LIMIT 1`,
+      [payload.name, req.params.id]
+    );
+    if (duplicate.rowCount > 0) {
+      return res.status(409).json({ success: false, message: "A custom field with this name already exists" });
     }
 
     const result = await pool.query(
@@ -368,10 +417,19 @@ export async function updateCustomField(req, res) {
            values = $3::jsonb,
            mandatory = $4,
            lists = $5,
+           user_id = $6,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $6 AND user_id = $7
+       WHERE id = $7
        RETURNING id, name, type, values, mandatory, lists, created_at, updated_at`,
-      [payload.name, payload.type, JSON.stringify(payload.values), payload.mandatory, payload.lists, req.params.id, req.user.id]
+      [
+        payload.name,
+        payload.type,
+        JSON.stringify(payload.values),
+        payload.mandatory,
+        payload.lists,
+        req.user.id,
+        req.params.id,
+      ]
     );
 
     if (result.rowCount === 0) {
@@ -381,8 +439,8 @@ export async function updateCustomField(req, res) {
     return res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     console.error(error);
-    if (error.code === "23505") {
-      return res.status(409).json({ success: false, message: "A custom field with this name already exists" });
+    if (error instanceof Error) {
+      return badRequest(res, error.message);
     }
     return res.status(500).json({ success: false, message: "Failed to update custom field" });
   }
@@ -391,8 +449,8 @@ export async function updateCustomField(req, res) {
 export async function deleteCustomField(req, res) {
   try {
     const result = await pool.query(
-      `DELETE FROM custom_fields WHERE id = $1 AND user_id = $2`,
-      [req.params.id, req.user.id]
+      `DELETE FROM custom_fields WHERE id = $1`,
+      [req.params.id]
     );
 
     if (result.rowCount === 0) {

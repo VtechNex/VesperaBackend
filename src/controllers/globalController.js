@@ -1,4 +1,5 @@
 import pool from "../db/pool.js";
+import { validatePropertyFilters } from "../utils/validation.js";
 
 async function getProperties(
     page = 1,
@@ -21,6 +22,12 @@ async function getProperties(
             location ILIKE $${index}
         )`);
         values.push(`%${filters.search}%`);
+        index++;
+    }
+
+    if (filters.location) {
+        conditions.push(`location ILIKE $${index}`);
+        values.push(`%${filters.location}%`);
         index++;
     }
 
@@ -119,4 +126,11 @@ async function getPropertyById(id) {
 export {
     getProperties,
     getPropertyById
+}
+
+export function getPublicPropertyFilters(query = {}, body = {}) {
+    return validatePropertyFilters({
+        ...body,
+        ...query,
+    });
 }
