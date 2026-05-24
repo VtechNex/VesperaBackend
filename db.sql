@@ -11,7 +11,7 @@ CREATE TABLE users (
     password TEXT NOT NULL,
 
     role VARCHAR(20) NOT NULL CHECK (
-        role IN ('admin', 'owner', 'manager', 'l1', 'l2')
+        role IN ('MAIN_ADMIN', 'L1', 'L2', 'admin', 'owner', 'manager', 'l1', 'l2')
     ),
 
     is_active BOOLEAN DEFAULT TRUE,
@@ -58,6 +58,9 @@ CREATE TABLE leads (
     list_id       BIGINT NOT NULL,
 
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by    UUID,
+    created_by_role VARCHAR(20),
 
     assigned_to    UUID,                -- user.id
     follow_up_date TIMESTAMP,  ----- next follow-up date for the lead
@@ -72,6 +75,10 @@ CREATE TABLE leads (
         ON DELETE CASCADE,
     CONSTRAINT fk_leads_assigned_to
         FOREIGN KEY (assigned_to)
+        REFERENCES users(id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_leads_created_by
+        FOREIGN KEY (created_by)
         REFERENCES users(id)
         ON DELETE SET NULL
 );

@@ -1,7 +1,8 @@
 import pool from "../db/pool.js";
+import { hasPermissionForRole } from "../middleware/security.js";
 
 function isAdmin(req) {
-  return req.user?.role === "admin";
+  return hasPermissionForRole(req.user?.role, "canManageUsers");
 }
 
 /**
@@ -9,8 +10,11 @@ function isAdmin(req) {
  */
 export const createList = async (req, res) => {
   try {
+    if (!hasPermissionForRole(req.user?.role, "canCreateList")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to create lists." });
+    }
+
     const { name, description, list_owner } = req.body;
-    const creator_id = req.user.id; // From auth middleware
 
     if (!name || !list_owner) {
       return res.status(400).json({ success: false, message: "List name and owner are required" });
@@ -51,15 +55,14 @@ export const createList = async (req, res) => {
  */
 export const getAllLists = async (req, res) => {
   try {
-    const owner_id = req.user.id;
-    const admin = isAdmin(req);
+    if (!hasPermissionForRole(req.user?.role, "canViewLists")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to view lists." });
+    }
 
     const result = await pool.query(
       `SELECT id, name, owner_id, subject, description, created_at
        FROM lists
-       ${admin ? "" : "WHERE owner_id = $1"}
-       ORDER BY created_at DESC`,
-      admin ? [] : [owner_id]
+       ORDER BY created_at DESC`
     );
 
     res.json({
@@ -78,15 +81,17 @@ export const getAllLists = async (req, res) => {
  */
 export const getListById = async (req, res) => {
   try {
+    if (!hasPermissionForRole(req.user?.role, "canViewLists")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to view lists." });
+    }
+
     const { id } = req.params;
-    const owner_id = req.user.id;
-    const admin = isAdmin(req);
 
     const result = await pool.query(
       `SELECT id, name, owner_id, subject, description, created_at
        FROM lists
-       WHERE id = $1 ${admin ? "" : "AND owner_id = $2"}`,
-      admin ? [id] : [id, owner_id]
+       WHERE id = $1`,
+      [id]
     );
 
     if (result.rowCount === 0) {
@@ -109,21 +114,21 @@ export const getListById = async (req, res) => {
  */
 export const updateList = async (req, res) => {
   try {
+    if (!hasPermissionForRole(req.user?.role, "canEditList")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to update lists." });
+    }
+
     const { id } = req.params;
     const { name, subject, description } = req.body;
-    const owner_id = req.user.id;
-    const admin = isAdmin(req);
 
     const result = await pool.query(
       `UPDATE lists
        SET name = COALESCE($1, name),
            subject = COALESCE($2, subject),
            description = COALESCE($3, description)
-       WHERE id = $4 ${admin ? "" : "AND owner_id = $5"}
+       WHERE id = $4
        RETURNING id, name, owner_id, subject, description, created_at`,
-      admin
-        ? [name || null, subject || null, description || null, id]
-        : [name || null, subject || null, description || null, id, owner_id]
+      [name || null, subject || null, description || null, id]
     );
 
     if (result.rowCount === 0) {
@@ -146,17 +151,19 @@ export const updateList = async (req, res) => {
  */
 export const deleteList = async (req, res) => {
   try {
+    if (!hasPermissionForRole(req.user?.role, "canDeleteList")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to delete lists." });
+    }
+
     const { id } = req.params;
-    const owner_id = req.user.id;
-    const admin = isAdmin(req);
 
     const listResult = await pool.query(
       `SELECT l.id, l.name, COUNT(ld.id)::int AS lead_count
        FROM lists l
        LEFT JOIN leads ld ON ld.list_id = l.id
-       WHERE l.id = $1 ${admin ? "" : "AND l.owner_id = $2"}
+       WHERE l.id = $1
        GROUP BY l.id, l.name`,
-      admin ? [id] : [id, owner_id]
+      [id]
     );
 
     if (listResult.rowCount === 0) {
@@ -174,8 +181,8 @@ export const deleteList = async (req, res) => {
 
     const result = await pool.query(
       `DELETE FROM lists
-       WHERE id = $1 ${admin ? "" : "AND owner_id = $2"}`,
-      admin ? [id] : [id, owner_id]
+       WHERE id = $1`,
+      [id]
     );
 
     if (result.rowCount === 0) {
@@ -198,8 +205,9 @@ export const deleteList = async (req, res) => {
  */
 export const getListsWithLeadsCount = async (req, res) => {
   try {
-    const owner_id = req.user.id;
-    const admin = isAdmin(req);
+    if (!hasPermissionForRole(req.user?.role, "canViewLists")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to view lists." });
+    }
 
     const result = await pool.query(
       `SELECT 
@@ -213,10 +221,8 @@ export const getListsWithLeadsCount = async (req, res) => {
        FROM lists l
        LEFT JOIN leads ld ON l.id = ld.list_id
        LEFT JOIN users u ON l.owner_id = u.id
-       ${admin ? "" : "WHERE l.owner_id = $1"}
        GROUP BY l.id, l.name, l.owner_id, u.username, l.description, l.created_at
-       ORDER BY l.created_at DESC`,
-      admin ? [] : [owner_id]
+       ORDER BY l.created_at DESC`
     );
 
     res.json({

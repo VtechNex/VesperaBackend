@@ -10,7 +10,7 @@ import leadsRouter from "./routes/leads.js";
 import propertiesRouter from "./routes/properties.js";
 import globalRouter from "./routes/globalRouter.js";
 import settingsRouter from "./routes/settings.js";
-import { authMiddleware, requireRole } from "./middleware/security.js";
+import { authMiddleware, requirePermission } from "./middleware/security.js";
 import { startFollowUpScheduler } from "./services/followupService.js";
 import { ensureSchema } from "./utils/schemaBootstrap.js";
 
@@ -30,11 +30,11 @@ app.use(
 app.use(express.json({ limit: "5mb" }));
 
 app.use("/api/auth", authRouter);
-app.use("/api/admin", authMiddleware, requireRole("admin"), adminRouter);
-app.use("/api/admin/qualifiers", authMiddleware, requireRole("admin"), qualifiersRouter);
+app.use("/api/admin", authMiddleware, requirePermission("canManageUsers"), adminRouter);
+app.use("/api/admin/qualifiers", authMiddleware, requirePermission("canManageQualifiers"), qualifiersRouter);
 app.use("/api/lists", authMiddleware, listsRouter);
 app.use("/api/leads", authMiddleware, leadsRouter);
-app.use("/api/properties", authMiddleware, propertiesRouter);
+app.use("/api/properties", authMiddleware, requirePermission("canManagePropertyMedia"), propertiesRouter);
 app.use("/api/settings", authMiddleware, settingsRouter);
 app.use("/api/global", globalRouter);
 app.use("/", (req, res) => {

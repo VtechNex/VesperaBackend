@@ -2,6 +2,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pool from "../db/pool.js";
 import { badRequest, isStrongPassword, normalizeEmail } from "../utils/validation.js";
+import { normalizeUserRole, ROLES } from "../middleware/security.js";
 
 export async function login(req, res) {
   try {
@@ -36,7 +37,7 @@ export async function login(req, res) {
       {
         id: user.id,
         email: user.email,
-        role: user.role,
+        role: normalizeUserRole(user.role),
       },
       JWT_SECRET,
       { expiresIn: "1d" }
@@ -47,7 +48,7 @@ export async function login(req, res) {
       user: {
         id: user.id,
         email: user.email,
-        role: user.role,
+        role: normalizeUserRole(user.role),
         username: user.username,
         name: [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || user.username,
       },
@@ -74,6 +75,13 @@ export async function register(req, res) {
       );
     }
 
+    const existingCount = await pool.query(`SELECT COUNT(*)::int AS total FROM users`);
+    if (Number(existingCount.rows?.[0]?.total || 0) > 0) {
+      return res.status(403).json({
+        error: "Registration is disabled. Ask a MAIN_ADMIN to create your account.",
+      });
+    }
+
     const existingUser = await pool.query(
       `SELECT id FROM users WHERE email = $1 OR username = $2 LIMIT 1`,
       [email, username]
@@ -91,7 +99,7 @@ export async function register(req, res) {
       `INSERT INTO users (username, email, password, role)
        VALUES ($1, $2, $3, $4)
        RETURNING id, username, email, role`,
-      [username, email, hashedPassword, "admin"]
+      [username, email, hashedPassword, ROLES.MAIN_ADMIN]
     );
 
     res.status(201).json({

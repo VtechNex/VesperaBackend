@@ -1,6 +1,11 @@
 import pool from "../db/pool.js";
 import { processDueFollowUps } from "../services/followupService.js";
 import {
+  hasPermissionForRole,
+  sanitizeLeadCollectionForUser,
+  sanitizeLeadForUser,
+} from "../middleware/security.js";
+import {
   badRequest,
   cleanOptionalString,
   isValidEmail,
@@ -56,7 +61,12 @@ function parseLeadPayload(body = {}) {
 export const createLead = async (req, res) => {
   try {
     const user_id = req.user.id;
+    const user_role = req.user.role;
     const payload = parseLeadPayload(req.body);
+
+    if (!hasPermissionForRole(user_role, "canCreateLead")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to create leads." });
+    }
 
     if (!payload.fname || !payload.mobile || !payload.list_id) {
       return badRequest(res, "First name, mobile, and list are required");
@@ -65,13 +75,7 @@ export const createLead = async (req, res) => {
       return badRequest(res, "A valid email address is required");
     }
 
-    const listCheck = await pool.query(
-      `SELECT l.id
-       FROM lists l
-       INNER JOIN users u ON u.id = $2
-       WHERE l.id = $1 AND (l.owner_id = $2 OR u.role = 'admin')`,
-      [payload.list_id, user_id]
-    );
+    const listCheck = await pool.query(`SELECT id FROM lists WHERE id = $1`, [payload.list_id]);
 
     if (listCheck.rowCount === 0) {
       return res.status(403).json({
@@ -104,10 +108,11 @@ export const createLead = async (req, res) => {
         deal_size, lead_potential, lead_stage,
         assigned_to, follow_up_date, repeat_follow_up,
         repeat_interval, follow_up_notes, do_not_follow_up,
-        do_not_follow_up_reason, custom_fields_data
+        do_not_follow_up_reason, custom_fields_data,
+        created_by, created_by_role, updated_at
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
+        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW()
       )
       RETURNING *`,
       [
@@ -137,10 +142,12 @@ export const createLead = async (req, res) => {
         payload.doNotFollowUp,
         payload.doNotFollowUpReason,
         payload.customFieldsData,
+        user_id,
+        user_role,
       ]
     );
 
-    res.status(201).json({ success: true, data: result.rows[0] });
+    res.status(201).json({ success: true, data: sanitizeLeadForUser(result.rows[0], req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead creation failed" });
@@ -149,16 +156,13 @@ export const createLead = async (req, res) => {
 
 export const getLeadsByListId = async (req, res) => {
   try {
-    const user_id = req.user.id;
     const { list_id } = req.params;
 
-    const listCheck = await pool.query(
-      `SELECT l.id
-       FROM lists l
-       INNER JOIN users u ON u.id = $2
-       WHERE l.id = $1 AND (l.owner_id = $2 OR u.role = 'admin')`,
-      [list_id, user_id]
-    );
+    if (!hasPermissionForRole(req.user?.role, "canViewLeads")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to view leads." });
+    }
+
+    const listCheck = await pool.query(`SELECT id FROM lists WHERE id = $1`, [list_id]);
 
     if (listCheck.rowCount === 0) {
       return res.status(403).json({
@@ -175,7 +179,7 @@ export const getLeadsByListId = async (req, res) => {
       [list_id]
     );
 
-    res.json({ success: true, data: result.rows });
+    res.json({ success: true, data: sanitizeLeadCollectionForUser(result.rows, req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Failed to fetch leads" });
@@ -184,33 +188,18 @@ export const getLeadsByListId = async (req, res) => {
 
 export const getAllLeads = async (req, res) => {
   try {
-    const user_id = req.user.id;
-    const role = req.user.role;
-
-    let query;
-    let params = [];
-
-    if (role === "admin") {
-      query = `
-        SELECT ld.*, l.name AS list_name
-        FROM leads ld
-        INNER JOIN lists l ON ld.list_id = l.id
-        ORDER BY ld.created_at DESC
-      `;
-    } else {
-      query = `
-        SELECT ld.*, l.name AS list_name
-        FROM leads ld
-        INNER JOIN lists l ON ld.list_id = l.id
-        WHERE l.owner_id = $1
-        ORDER BY ld.created_at DESC
-      `;
-      params = [user_id];
+    if (!hasPermissionForRole(req.user?.role, "canViewLeads")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to view leads." });
     }
 
-    const result = await pool.query(query, params);
+    const result = await pool.query(
+      `SELECT ld.*, l.name AS list_name
+       FROM leads ld
+       INNER JOIN lists l ON ld.list_id = l.id
+       ORDER BY ld.created_at DESC`
+    );
 
-    res.json({ success: true, data: result.rows });
+    res.json({ success: true, data: sanitizeLeadCollectionForUser(result.rows, req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Failed to fetch leads" });
@@ -219,46 +208,29 @@ export const getAllLeads = async (req, res) => {
 
 export const getLeadById = async (req, res) => {
   try {
-    const user_id = req.user.id;
-    const role = req.user.role;
     const { id } = req.params;
 
-    let query;
-    let params;
-
-    if (role === "admin") {
-      query = `
-        SELECT ld.*, l.name AS list_name,
-               u.username AS assignee_name, u.email AS assignee_email,
-               owner.username AS list_owner_name, owner.email AS list_owner_email
-        FROM leads ld
-        INNER JOIN lists l ON ld.list_id = l.id
-        LEFT JOIN users u ON ld.assigned_to = u.id
-        LEFT JOIN users owner ON l.owner_id = owner.id
-        WHERE ld.id = $1
-      `;
-      params = [id];
-    } else {
-      query = `
-        SELECT ld.*, l.name AS list_name,
-               u.username AS assignee_name, u.email AS assignee_email,
-               owner.username AS list_owner_name, owner.email AS list_owner_email
-        FROM leads ld
-        INNER JOIN lists l ON ld.list_id = l.id
-        LEFT JOIN users u ON ld.assigned_to = u.id
-        LEFT JOIN users owner ON l.owner_id = owner.id
-        WHERE ld.id = $1 AND l.owner_id = $2
-      `;
-      params = [id, user_id];
+    if (!hasPermissionForRole(req.user?.role, "canViewLeads")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to view lead details." });
     }
 
-    const result = await pool.query(query, params);
+    const result = await pool.query(
+      `SELECT ld.*, l.name AS list_name,
+              u.username AS assignee_name, u.email AS assignee_email,
+              owner.username AS list_owner_name, owner.email AS list_owner_email
+       FROM leads ld
+       INNER JOIN lists l ON ld.list_id = l.id
+       LEFT JOIN users u ON ld.assigned_to = u.id
+       LEFT JOIN users owner ON l.owner_id = owner.id
+       WHERE ld.id = $1`,
+      [id]
+    );
 
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "Lead not found" });
     }
 
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ success: true, data: sanitizeLeadForUser(result.rows[0], req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Failed to fetch lead" });
@@ -267,31 +239,12 @@ export const getLeadById = async (req, res) => {
 
 export const updateLead = async (req, res) => {
   try {
-    const user_id = req.user.id;
     const user_role = req.user.role;
     const { id } = req.params;
     const payload = parseLeadPayload(req.body);
 
-    if (user_role !== "admin") {
-      const leadPermissions = await pool.query(
-        `SELECT ld.assigned_to, l.owner_id
-         FROM leads ld
-         INNER JOIN lists l ON ld.list_id = l.id
-         WHERE ld.id = $1`,
-        [id]
-      );
-
-      if (leadPermissions.rowCount === 0) {
-        return res.status(404).json({ success: false, message: "Lead not found" });
-      }
-
-      const { assigned_to, owner_id } = leadPermissions.rows[0];
-      if (owner_id !== user_id && assigned_to !== user_id) {
-        return res.status(403).json({
-          success: false,
-          message: "You don't have permission to update this lead",
-        });
-      }
+    if (!hasPermissionForRole(user_role, "canEditLead")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to update leads." });
     }
 
     if (!payload.fname || !payload.mobile) {
@@ -365,7 +318,7 @@ export const updateLead = async (req, res) => {
       return res.status(404).json({ success: false, message: "Lead not found" });
     }
 
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ success: true, data: sanitizeLeadForUser(result.rows[0], req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead update failed" });
@@ -374,17 +327,13 @@ export const updateLead = async (req, res) => {
 
 export const deleteLead = async (req, res) => {
   try {
-    const user_id = req.user.id;
     const { id } = req.params;
 
-    const ownershipCheck = await pool.query(
-      `SELECT ld.id
-       FROM leads ld
-       INNER JOIN lists l ON ld.list_id = l.id
-       INNER JOIN users u ON u.id = $2
-       WHERE ld.id = $1 AND (l.owner_id = $2 OR u.role = 'admin')`,
-      [id, user_id]
-    );
+    if (!hasPermissionForRole(req.user?.role, "canDeleteLead")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to delete leads." });
+    }
+
+    const ownershipCheck = await pool.query(`SELECT id FROM leads WHERE id = $1`, [id]);
 
     if (ownershipCheck.rowCount === 0) {
       return res.status(403).json({
@@ -403,9 +352,12 @@ export const deleteLead = async (req, res) => {
 
 export const searchLeads = async (req, res) => {
   try {
-    const user_id = req.user.id;
     const role = req.user.role;
     const { query } = req.body;
+
+    if (!hasPermissionForRole(role, "canViewLeads")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to search leads." });
+    }
 
     if (!query || query.trim().length < 2) {
       return res.status(400).json({
@@ -416,43 +368,20 @@ export const searchLeads = async (req, res) => {
 
     const searchTerm = `%${query}%`;
 
-    let sql;
-    let params;
-
-    if (role === "admin") {
-      sql = `
-        SELECT ld.*, l.name AS list_name
-        FROM leads ld
-        INNER JOIN lists l ON ld.list_id = l.id
-        WHERE ld.fname ILIKE $1
-           OR ld.lname ILIKE $1
-           OR ld.email ILIKE $1
-           OR ld.mobile ILIKE $1
-           OR ld.organization ILIKE $1
-        ORDER BY ld.created_at DESC
-        LIMIT 100
-      `;
-      params = [searchTerm];
-    } else {
-      sql = `
-        SELECT ld.*, l.name AS list_name
-        FROM leads ld
-        INNER JOIN lists l ON ld.list_id = l.id
-        WHERE l.owner_id = $1 AND (
-          ld.fname ILIKE $2 OR
-          ld.lname ILIKE $2 OR
-          ld.email ILIKE $2 OR
-          ld.mobile ILIKE $2 OR
-          ld.organization ILIKE $2
-        )
-        ORDER BY ld.created_at DESC
-        LIMIT 100
-      `;
-      params = [user_id, searchTerm];
-    }
-
-    const result = await pool.query(sql, params);
-    res.json({ success: true, data: result.rows });
+    const result = await pool.query(
+      `SELECT ld.*, l.name AS list_name
+       FROM leads ld
+       INNER JOIN lists l ON ld.list_id = l.id
+       WHERE ld.fname ILIKE $1
+          OR ld.lname ILIKE $1
+          OR ld.email ILIKE $1
+          OR ld.mobile ILIKE $1
+          OR ld.organization ILIKE $1
+       ORDER BY ld.created_at DESC
+       LIMIT 100`,
+      [searchTerm]
+    );
+    res.json({ success: true, data: sanitizeLeadCollectionForUser(result.rows, req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead search failed" });
@@ -461,6 +390,9 @@ export const searchLeads = async (req, res) => {
 
 export const triggerFollowUps = async (req, res) => {
   try {
+    if (!hasPermissionForRole(req.user?.role, "canManageUsers")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to trigger follow-ups." });
+    }
     await processDueFollowUps();
     res.json({ success: true, message: "Follow-up processing triggered" });
   } catch (err) {

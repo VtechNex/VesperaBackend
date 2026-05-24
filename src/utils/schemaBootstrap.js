@@ -23,6 +23,10 @@ const statements = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS instagram VARCHAR(255)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_url VARCHAR(255)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB DEFAULT '{}'::jsonb`,
+  `ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`,
+  `ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (
+    role IN ('MAIN_ADMIN', 'L1', 'L2', 'admin', 'owner', 'manager', 'l1', 'l2', 'superadmin', 'sales', 'marketing', 'customer')
+  )`,
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS product_group VARCHAR(150)`,
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS customer_group VARCHAR(150)`,
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'`,
@@ -32,6 +36,9 @@ const statements = [
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS do_not_follow_up BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS do_not_follow_up_reason TEXT`,
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS custom_fields_data JSONB DEFAULT '{}'::jsonb`,
+  `ALTER TABLE leads ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL`,
+  `ALTER TABLE leads ADD COLUMN IF NOT EXISTS created_by_role VARCHAR(20)`,
+  `ALTER TABLE leads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`,
   `CREATE TABLE IF NOT EXISTS properties (
     id BIGSERIAL PRIMARY KEY,
     title VARCHAR(255) NOT NULL,

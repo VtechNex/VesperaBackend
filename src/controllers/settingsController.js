@@ -9,13 +9,15 @@ import {
   isValidEmail,
   normalizeEmail,
 } from "../utils/validation.js";
+import { normalizeUserRole } from "../middleware/security.js";
 
 function mapUser(row) {
   return {
     id: row.id,
     username: row.username,
     email: row.email,
-    role: row.role,
+    role: normalizeUserRole(row.role),
+    rawRole: row.role,
     is_active: row.is_active,
     firstName: row.first_name || "",
     lastName: row.last_name || "",
@@ -166,6 +168,31 @@ export async function changePassword(req, res) {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ success: false, message: "Failed to update password" });
+  }
+}
+
+export async function getAssignableUsers(req, res) {
+  try {
+    const result = await pool.query(
+      `SELECT id, username, email, role, is_active
+       FROM users
+       WHERE is_active = TRUE
+       ORDER BY username ASC`
+    );
+
+    return res.json({
+      success: true,
+      data: result.rows.map((row) => ({
+        id: row.id,
+        username: row.username,
+        email: row.email,
+        role: normalizeUserRole(row.role),
+        is_active: row.is_active,
+      })),
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Failed to fetch assignable users" });
   }
 }
 
