@@ -1,20 +1,119 @@
 import pool from "../db/pool.js";
 import { cleanOptionalString, parseInteger, parseNumber } from "../utils/validation.js";
 
+function getPropertyCategory(type) {
+  const normalized = String(type || "").trim().toLowerCase();
+  if (["commercial", "office", "shop", "showroom"].includes(normalized)) return "commercial";
+  if (["land", "plot", "farm land", "agricultural"].includes(normalized)) return "land";
+  return "residential";
+}
+
+function sanitizeYesNo(value) {
+  if (value === "Yes" || value === "No") return value;
+  return "";
+}
+
+function normalizePropertyDetails(type, propertyDetails = {}, legacy = {}) {
+  const category = getPropertyCategory(type);
+
+  if (category === "commercial") {
+    return {
+      sqft: parseInteger(propertyDetails.sqft ?? legacy.sqft),
+      floor: parseInteger(propertyDetails.floor),
+      washroomAvailable: sanitizeYesNo(propertyDetails.washroomAvailable),
+      furnishingStatus: cleanOptionalString(propertyDetails.furnishingStatus),
+    };
+  }
+
+  if (category === "land") {
+    return {
+      landArea: parseNumber(propertyDetails.landArea ?? legacy.sqft),
+      areaUnit: cleanOptionalString(propertyDetails.areaUnit) || (legacy.sqft ? "Sqft" : "Guntha"),
+      roadTouch: sanitizeYesNo(propertyDetails.roadTouch),
+      naPlot: sanitizeYesNo(propertyDetails.naPlot),
+    };
+  }
+
+  return {
+    rooms: parseInteger(propertyDetails.rooms ?? legacy.beds),
+    washrooms: parseInteger(propertyDetails.washrooms ?? legacy.baths),
+    carpetArea: parseNumber(propertyDetails.carpetArea ?? legacy.sqft),
+    builtUpArea: parseNumber(propertyDetails.builtUpArea),
+    floor: parseInteger(propertyDetails.floor),
+    totalFloors: parseInteger(propertyDetails.totalFloors),
+  };
+}
+
 function normalizePropertyPayload(property = {}) {
+  const type = cleanOptionalString(property.type);
+  const propertyDetails = normalizePropertyDetails(type, property.propertyDetails ?? property.property_details, {
+    beds: property.beds,
+    baths: property.baths,
+    sqft: property.sqft,
+  });
+  const category = getPropertyCategory(type);
+
+  let beds = null;
+  let baths = null;
+  let sqft = null;
+
+  if (category === "residential") {
+    beds = propertyDetails.rooms ?? parseInteger(property.beds);
+    baths = propertyDetails.washrooms ?? parseInteger(property.baths);
+    sqft = propertyDetails.carpetArea ?? parseInteger(property.sqft);
+  } else if (category === "commercial") {
+    beds = null;
+    baths = propertyDetails.washroomAvailable === "Yes" ? 1 : null;
+    sqft = propertyDetails.sqft ?? parseInteger(property.sqft);
+  } else {
+    beds = null;
+    baths = null;
+    sqft =
+      String(propertyDetails.areaUnit || "").toLowerCase() === "sqft"
+        ? parseInteger(propertyDetails.landArea)
+        : parseInteger(property.sqft);
+  }
+
   return {
     title: cleanOptionalString(property.title),
     description: cleanOptionalString(property.description),
     price: parseNumber(property.price),
     location: cleanOptionalString(property.location),
     images: Array.isArray(property.images) ? property.images.filter(Boolean) : [],
-    type: cleanOptionalString(property.type),
-    beds: parseInteger(property.beds),
-    baths: parseInteger(property.baths),
-    sqft: parseInteger(property.sqft),
+    type,
+    propertyDetails,
+    beds,
+    baths,
+    sqft,
     tags: Array.isArray(property.tags) ? property.tags.filter(Boolean) : [],
     sale: typeof property.sale === "boolean" ? property.sale : property.sale !== "false",
   };
+}
+
+function validatePropertyPayload(payload) {
+  if (!payload.title || !payload.location || payload.price == null || !payload.type) {
+    throw new Error("Title, location, type, and price are required");
+  }
+  if (payload.price < 0) {
+    throw new Error("Price must be zero or greater");
+  }
+
+  const category = getPropertyCategory(payload.type);
+  const details = payload.propertyDetails || {};
+
+  if (category === "residential") {
+    if (!details.rooms || details.rooms < 0) throw new Error("Rooms / BHK is required");
+    if (!details.carpetArea || details.carpetArea < 0) throw new Error("Carpet Area is required");
+  }
+
+  if (category === "commercial") {
+    if (!details.sqft || details.sqft < 0) throw new Error("Sqft is required");
+  }
+
+  if (category === "land") {
+    if (!details.landArea || details.landArea < 0) throw new Error("Land Area is required");
+    if (!details.areaUnit) throw new Error("Area Unit is required");
+  }
 }
 
 async function getProperties(page = 1, limit = 20, filters = {}) {
@@ -116,12 +215,10 @@ async function getPropertyById(id) {
 
 async function createProperty(property) {
   const payload = normalizePropertyPayload(property);
-  if (!payload.title || !payload.location || payload.price == null || !payload.type) {
-    throw new Error("Title, location, type, and price are required");
-  }
+  validatePropertyPayload(payload);
 
   const { rows } = await pool.query(
-    "INSERT INTO properties (title, description, price, location, images, type, beds, baths, sqft, tags, sale) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *",
+    "INSERT INTO properties (title, description, price, location, images, type, beds, baths, sqft, property_details, tags, sale) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12) RETURNING *",
     [
       payload.title,
       payload.description,
@@ -132,6 +229,7 @@ async function createProperty(property) {
       payload.beds,
       payload.baths,
       payload.sqft,
+      JSON.stringify(payload.propertyDetails || {}),
       payload.tags,
       payload.sale,
     ]
@@ -141,12 +239,10 @@ async function createProperty(property) {
 
 async function updateProperty(id, property) {
   const payload = normalizePropertyPayload(property);
-  if (!payload.title || !payload.location || payload.price == null || !payload.type) {
-    throw new Error("Title, location, type, and price are required");
-  }
+  validatePropertyPayload(payload);
 
   const { rows } = await pool.query(
-    "UPDATE properties SET title = $1, description = $2, price = $3, location = $4, images = $5, type = $6, beds = $7, baths = $8, sqft = $9, tags = $10, sale = $11, updated_at = CURRENT_TIMESTAMP WHERE id = $12 RETURNING *",
+    "UPDATE properties SET title = $1, description = $2, price = $3, location = $4, images = $5, type = $6, beds = $7, baths = $8, sqft = $9, property_details = $10::jsonb, tags = $11, sale = $12, updated_at = CURRENT_TIMESTAMP WHERE id = $13 RETURNING *",
     [
       payload.title,
       payload.description,
@@ -157,6 +253,7 @@ async function updateProperty(id, property) {
       payload.beds,
       payload.baths,
       payload.sqft,
+      JSON.stringify(payload.propertyDetails || {}),
       payload.tags,
       payload.sale,
       id,

@@ -48,6 +48,7 @@ const statements = [
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`,
+  `ALTER TABLE properties ADD COLUMN IF NOT EXISTS property_details JSONB DEFAULT '{}'::jsonb`,
   `CREATE TABLE IF NOT EXISTS company_profiles (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     primary_contact JSONB NOT NULL DEFAULT '{}'::jsonb,

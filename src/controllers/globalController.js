@@ -67,7 +67,7 @@ async function getProperties(
     // Type
     if (filters.type) {
         conditions.push(`type = $${index}`);
-        values.push(filters.type);
+        values.push(String(filters.type).toLowerCase());
         index++;
     }
 

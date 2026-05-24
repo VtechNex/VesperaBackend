@@ -1,5 +1,9 @@
 import pool from "../db/pool.js";
 
+function isAdmin(req) {
+  return req.user?.role === "admin";
+}
+
 /**
  * CREATE LIST
  */
@@ -48,13 +52,14 @@ export const createList = async (req, res) => {
 export const getAllLists = async (req, res) => {
   try {
     const owner_id = req.user.id;
+    const admin = isAdmin(req);
 
     const result = await pool.query(
       `SELECT id, name, owner_id, subject, description, created_at
        FROM lists
-       WHERE owner_id = $1
+       ${admin ? "" : "WHERE owner_id = $1"}
        ORDER BY created_at DESC`,
-      [owner_id]
+      admin ? [] : [owner_id]
     );
 
     res.json({
@@ -75,12 +80,13 @@ export const getListById = async (req, res) => {
   try {
     const { id } = req.params;
     const owner_id = req.user.id;
+    const admin = isAdmin(req);
 
     const result = await pool.query(
       `SELECT id, name, owner_id, subject, description, created_at
        FROM lists
-       WHERE id = $1 AND owner_id = $2`,
-      [id, owner_id]
+       WHERE id = $1 ${admin ? "" : "AND owner_id = $2"}`,
+      admin ? [id] : [id, owner_id]
     );
 
     if (result.rowCount === 0) {
@@ -106,15 +112,18 @@ export const updateList = async (req, res) => {
     const { id } = req.params;
     const { name, subject, description } = req.body;
     const owner_id = req.user.id;
+    const admin = isAdmin(req);
 
     const result = await pool.query(
       `UPDATE lists
        SET name = COALESCE($1, name),
            subject = COALESCE($2, subject),
            description = COALESCE($3, description)
-       WHERE id = $4 AND owner_id = $5
+       WHERE id = $4 ${admin ? "" : "AND owner_id = $5"}
        RETURNING id, name, owner_id, subject, description, created_at`,
-      [name || null, subject || null, description || null, id, owner_id]
+      admin
+        ? [name || null, subject || null, description || null, id]
+        : [name || null, subject || null, description || null, id, owner_id]
     );
 
     if (result.rowCount === 0) {
@@ -139,11 +148,34 @@ export const deleteList = async (req, res) => {
   try {
     const { id } = req.params;
     const owner_id = req.user.id;
+    const admin = isAdmin(req);
+
+    const listResult = await pool.query(
+      `SELECT l.id, l.name, COUNT(ld.id)::int AS lead_count
+       FROM lists l
+       LEFT JOIN leads ld ON ld.list_id = l.id
+       WHERE l.id = $1 ${admin ? "" : "AND l.owner_id = $2"}
+       GROUP BY l.id, l.name`,
+      admin ? [id] : [id, owner_id]
+    );
+
+    if (listResult.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "List not found" });
+    }
+
+    const targetList = listResult.rows[0];
+    if (Number(targetList.lead_count) > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `This list contains ${targetList.lead_count} lead${targetList.lead_count === 1 ? "" : "s"}. Please move or remove those leads before deleting this list.`,
+        leadCount: Number(targetList.lead_count),
+      });
+    }
 
     const result = await pool.query(
       `DELETE FROM lists
-       WHERE id = $1 AND owner_id = $2`,
-      [id, owner_id]
+       WHERE id = $1 ${admin ? "" : "AND owner_id = $2"}`,
+      admin ? [id] : [id, owner_id]
     );
 
     if (result.rowCount === 0) {
@@ -166,19 +198,25 @@ export const deleteList = async (req, res) => {
  */
 export const getListsWithLeadsCount = async (req, res) => {
   try {
+    const owner_id = req.user.id;
+    const admin = isAdmin(req);
+
     const result = await pool.query(
       `SELECT 
         l.id,
         l.name,
+        l.owner_id,
         u.username as list_owner,
         l.description,
         l.created_at,
-        COUNT(ld.id) as total_leads
+        COUNT(ld.id)::int as total_leads
        FROM lists l
        LEFT JOIN leads ld ON l.id = ld.list_id
        LEFT JOIN users u ON l.owner_id = u.id
-       GROUP BY l.id, l.name, u.username, l.description, l.created_at
-       ORDER BY l.created_at DESC`
+       ${admin ? "" : "WHERE l.owner_id = $1"}
+       GROUP BY l.id, l.name, l.owner_id, u.username, l.description, l.created_at
+       ORDER BY l.created_at DESC`,
+      admin ? [] : [owner_id]
     );
 
     res.json({
