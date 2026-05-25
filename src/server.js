@@ -18,14 +18,26 @@ import { fileURLToPath } from "node:url";
 dotenv.config();
 
 const app = express();
-const allowedOrigins = new Set([
+const exactAllowedOrigins = new Set([
   "http://localhost:5173",
   "https://vespera-web-app.vercel.app",
 ]);
 
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (exactAllowedOrigins.has(origin)) return true;
+
+  try {
+    const { hostname, protocol } = new URL(origin);
+    return protocol === "https:" && /^vespera-web-app(?:-[a-z0-9-]+)?\.vercel\.app$/i.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
 const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.has(origin)) {
+    if (isAllowedOrigin(origin)) {
       return callback(null, true);
     }
     return callback(new Error("Not allowed by CORS"));
@@ -62,6 +74,12 @@ app.use(
   cors(corsOptions)
 );
 app.options(/.*/, cors(corsOptions));
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  return next();
+});
 
 app.use(express.json({ limit: "5mb" }));
 app.use(async (req, res, next) => {
