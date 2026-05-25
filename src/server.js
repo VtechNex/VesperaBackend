@@ -13,21 +13,66 @@ import settingsRouter from "./routes/settings.js";
 import { authMiddleware, requirePermission } from "./middleware/security.js";
 import { startFollowUpScheduler } from "./services/followupService.js";
 import { ensureSchema } from "./utils/schemaBootstrap.js";
+import { fileURLToPath } from "node:url";
 
 dotenv.config();
 
 const app = express();
+const allowedOrigins = new Set([
+  "http://localhost:5173",
+  "https://vespera-web-app.vercel.app",
+]);
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+  optionsSuccessStatus: 204,
+};
+
+let bootstrapPromise = null;
+let schedulerStarted = false;
+
+async function initializeApp() {
+  if (!bootstrapPromise) {
+    bootstrapPromise = (async () => {
+      await pool.query("SELECT 1");
+      await ensureSchema();
+
+      if (!process.env.VERCEL && !schedulerStarted) {
+        startFollowUpScheduler();
+        schedulerStarted = true;
+      }
+    })().catch((error) => {
+      bootstrapPromise = null;
+      throw error;
+    });
+  }
+
+  return bootstrapPromise;
+}
 
 app.use(
-  cors({
-    origin: ["http://localhost:5173", "https://vespera-web-app.vercel.app"],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  })
+  cors(corsOptions)
 );
+app.options(/.*/, cors(corsOptions));
 
 app.use(express.json({ limit: "5mb" }));
+app.use(async (req, res, next) => {
+  try {
+    await initializeApp();
+    next();
+  } catch (error) {
+    console.error("App initialization failed", error);
+    res.status(500).json({ success: false, message: "Server initialization failed" });
+  }
+});
 
 app.use("/api/auth", authRouter);
 app.use("/api/admin", authMiddleware, requirePermission("canManageUsers"), adminRouter);
@@ -43,12 +88,10 @@ app.use("/", (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-async function startServer() {
+export async function startServer() {
   try {
-    await pool.query("SELECT 1");
-    await ensureSchema();
+    await initializeApp();
     console.log("Database connected");
-    startFollowUpScheduler();
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
@@ -59,6 +102,9 @@ async function startServer() {
   }
 }
 
-startServer();
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isDirectRun) {
+  startServer();
+}
 
 export default app;
