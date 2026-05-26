@@ -14,6 +14,7 @@ import { authMiddleware, requirePermission } from "./middleware/security.js";
 import { startFollowUpScheduler } from "./services/followupService.js";
 import { ensureSchema } from "./utils/schemaBootstrap.js";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 dotenv.config();
 
@@ -120,7 +121,8 @@ export async function startServer() {
   }
 }
 
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const isDirectRun = process.argv[1]
+  && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 if (isDirectRun) {
   startServer();
 }
