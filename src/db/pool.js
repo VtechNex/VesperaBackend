@@ -1,6 +1,16 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import pkg from "pg";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 const { Pool } = pkg;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({
+  path: path.resolve(__dirname, "../../.env"),
+});
 
 const hasConnectionString = Boolean(process.env.DATABASE_URL);
 
