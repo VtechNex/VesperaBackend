@@ -36,4 +36,11 @@ if (!hasConnectionString && (!poolConfig.user || !poolConfig.host || !poolConfig
 
 const pool = new Pool(poolConfig);
 
+pool.on("error", (error) => {
+  console.error("[db] Unexpected idle client error", {
+    code: error?.code,
+    message: error?.message,
+  });
+});
+
 export default pool;

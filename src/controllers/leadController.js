@@ -15,6 +15,20 @@ import {
   parseNumber,
 } from "../utils/validation.js";
 
+const MAX_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 25;
+const SORTABLE_COLUMNS = {
+  createdAt: "ld.created_at",
+  updatedAt: "ld.updated_at",
+  fname: "ld.fname",
+  lname: "ld.lname",
+  organization: "ld.organization",
+  leadStage: "ld.lead_stage",
+  listName: "l.name",
+};
+const DEFAULT_SORT_BY = "createdAt";
+const DEFAULT_SORT_ORDER = "desc";
+
 function buildFollowUpTimestamp(date, time) {
   if (!date) return null;
   return `${date}T${time || "00:00"}`;
@@ -55,6 +69,150 @@ function parseLeadPayload(body = {}) {
     doNotFollowUpReason: cleanOptionalString(body.doNotFollowUpReason ?? body.do_not_follow_up_reason),
     customFieldsData:
       body.customFieldsData && typeof body.customFieldsData === "object" ? body.customFieldsData : {},
+  };
+}
+
+function parseLeadCollectionFilters(source = {}) {
+  const page = Math.max(parseInteger(source.page) || 1, 1);
+  const requestedLimit = parseInteger(source.limit) || DEFAULT_PAGE_SIZE;
+  const limit = Math.min(Math.max(requestedLimit, 1), MAX_PAGE_SIZE);
+  const search = cleanOptionalString(source.search ?? source.query);
+  const stage = cleanOptionalString(source.stage ?? source.status);
+  const listId = parseInteger(source.listId ?? source.list_id);
+  const assignedToRaw = cleanOptionalString(source.assignedTo ?? source.assigned_to);
+  const assignedTo = assignedToRaw?.toLowerCase() === "unassigned" ? "unassigned" : assignedToRaw;
+  const sortBy = SORTABLE_COLUMNS[source.sortBy] ? source.sortBy : DEFAULT_SORT_BY;
+  const sortOrder = String(source.sortOrder || DEFAULT_SORT_ORDER).toLowerCase() === "asc" ? "asc" : "desc";
+
+  return {
+    page,
+    limit,
+    search,
+    stage,
+    listId,
+    assignedTo,
+    sortBy,
+    sortOrder,
+  };
+}
+
+function buildLeadCollectionQuery(filters, options = {}) {
+  const { includePagination = true } = options;
+  const clauses = [];
+  const values = [];
+  let index = 1;
+
+  if (filters.search) {
+    clauses.push(`(
+      ld.fname ILIKE $${index}
+      OR ld.lname ILIKE $${index}
+      OR ld.email ILIKE $${index}
+      OR ld.mobile ILIKE $${index}
+      OR ld.organization ILIKE $${index}
+    )`);
+    values.push(`%${filters.search}%`);
+    index += 1;
+  }
+
+  if (filters.stage) {
+    clauses.push(`ld.lead_stage ILIKE $${index}`);
+    values.push(filters.stage);
+    index += 1;
+  }
+
+  if (filters.listId) {
+    clauses.push(`ld.list_id = $${index}`);
+    values.push(filters.listId);
+    index += 1;
+  }
+
+  if (filters.assignedTo === "unassigned") {
+    clauses.push("ld.assigned_to IS NULL");
+  } else if (filters.assignedTo) {
+    clauses.push(`ld.assigned_to = $${index}`);
+    values.push(filters.assignedTo);
+    index += 1;
+  }
+
+  const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const orderColumn = SORTABLE_COLUMNS[filters.sortBy] || SORTABLE_COLUMNS[DEFAULT_SORT_BY];
+  const orderDirection = filters.sortOrder === "asc" ? "ASC" : "DESC";
+  const baseFromClause = `
+    FROM leads ld
+    INNER JOIN lists l ON ld.list_id = l.id
+    ${whereClause}
+  `;
+
+  const dataQueryParts = [
+    `SELECT ld.*, l.name AS list_name ${baseFromClause}`,
+    `ORDER BY ${orderColumn} ${orderDirection}, ld.id DESC`,
+  ];
+  const filterValues = [...values];
+
+  if (includePagination) {
+    dataQueryParts.push(`LIMIT $${index} OFFSET $${index + 1}`);
+    values.push(filters.limit, (filters.page - 1) * filters.limit);
+  }
+
+  return {
+    countQuery: `SELECT COUNT(*)::int AS total ${baseFromClause}`,
+    dataQuery: dataQueryParts.join("\n"),
+    baseFromClause,
+    filterValues,
+    values,
+  };
+}
+
+async function fetchLeadCollection(filters, options = {}) {
+  const { includePagination = true, includeSummary = false } = options;
+  const queryConfig = buildLeadCollectionQuery(filters, { includePagination });
+  const [dataResult, countResult] = await Promise.all([
+    pool.query(queryConfig.dataQuery, queryConfig.values),
+    pool.query(queryConfig.countQuery, queryConfig.filterValues),
+  ]);
+
+  const total = Number(countResult.rows[0]?.total || 0);
+  const totalPages = includePagination ? Math.max(1, Math.ceil(total / filters.limit)) : (total > 0 ? 1 : 0);
+  const pagination = includePagination
+    ? {
+        page: filters.page,
+        limit: filters.limit,
+        total,
+        totalPages,
+        hasNextPage: filters.page < totalPages,
+        hasPrevPage: filters.page > 1,
+      }
+    : null;
+
+  let summary = null;
+  if (includeSummary) {
+    const summaryQueryConfig = buildLeadCollectionQuery(filters, { includePagination: false });
+    const summaryResult = await pool.query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE ld.assigned_to IS NULL)::int AS unattended,
+         COUNT(*) FILTER (WHERE ld.assigned_to IS NOT NULL)::int AS assigned,
+         COUNT(*) FILTER (WHERE lower(l.name) LIKE '%hot%')::int AS hot
+       ${summaryQueryConfig.baseFromClause}`,
+      summaryQueryConfig.filterValues
+    );
+
+    summary = summaryResult.rows[0] || { total, unattended: 0, assigned: 0, hot: 0 };
+  }
+
+  return {
+    rows: dataResult.rows,
+    pagination,
+    summary,
+  };
+}
+
+function buildLeadCollectionResponse(rows, req, pagination, summary = null) {
+  return {
+    success: true,
+    data: sanitizeLeadCollectionForUser(rows, req.user),
+    ...(pagination ? { pagination } : {}),
+    ...(summary ? { summary } : {}),
   };
 }
 
@@ -192,14 +350,36 @@ export const getAllLeads = async (req, res) => {
       return res.status(403).json({ success: false, message: "You do not have permission to view leads." });
     }
 
-    const result = await pool.query(
-      `SELECT ld.*, l.name AS list_name
-       FROM leads ld
-       INNER JOIN lists l ON ld.list_id = l.id
-       ORDER BY ld.created_at DESC`
-    );
+    const filters = parseLeadCollectionFilters(req.query);
+    const collection = await fetchLeadCollection(filters, {
+      includePagination: true,
+      includeSummary: true,
+    });
 
-    res.json({ success: true, data: sanitizeLeadCollectionForUser(result.rows, req.user) });
+    res.json(buildLeadCollectionResponse(collection.rows, req, collection.pagination, collection.summary));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Failed to fetch leads" });
+  }
+};
+
+export const getAllLeadsCollection = async (req, res) => {
+  try {
+    if (!hasPermissionForRole(req.user, "canViewLeads")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to view leads." });
+    }
+
+    const filters = parseLeadCollectionFilters({
+      ...req.query,
+      page: 1,
+      limit: MAX_PAGE_SIZE,
+    });
+    const collection = await fetchLeadCollection(filters, {
+      includePagination: false,
+      includeSummary: false,
+    });
+
+    res.json(buildLeadCollectionResponse(collection.rows, req, null));
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Failed to fetch leads" });
@@ -212,14 +392,13 @@ export const exportLeads = async (req, res) => {
       return res.status(403).json({ success: false, message: "You do not have permission to export leads." });
     }
 
-    const result = await pool.query(
-      `SELECT ld.*, l.name AS list_name
-       FROM leads ld
-       INNER JOIN lists l ON ld.list_id = l.id
-       ORDER BY ld.created_at DESC`
-    );
+    const filters = parseLeadCollectionFilters(req.query);
+    const collection = await fetchLeadCollection(filters, {
+      includePagination: false,
+      includeSummary: false,
+    });
 
-    return res.json({ success: true, data: sanitizeLeadCollectionForUser(result.rows, req.user) });
+    return res.json(buildLeadCollectionResponse(collection.rows, req, null));
   } catch (err) {
     console.error(err);
     return res.status(500).json({ success: false, message: "Failed to export leads" });
@@ -371,35 +550,28 @@ export const deleteLead = async (req, res) => {
 
 export const searchLeads = async (req, res) => {
   try {
-    const { query } = req.body;
-
     if (!hasPermissionForRole(req.user, "canViewLeads")) {
       return res.status(403).json({ success: false, message: "You do not have permission to search leads." });
     }
 
-    if (!query || query.trim().length < 2) {
+    const filters = parseLeadCollectionFilters({
+      ...req.query,
+      search: req.body?.query,
+    });
+
+    if (!filters.search || filters.search.trim().length < 2) {
       return res.status(400).json({
         success: false,
         message: "Query must be at least 2 characters",
       });
     }
 
-    const searchTerm = `%${query}%`;
+    const collection = await fetchLeadCollection(filters, {
+      includePagination: true,
+      includeSummary: true,
+    });
 
-    const result = await pool.query(
-      `SELECT ld.*, l.name AS list_name
-       FROM leads ld
-       INNER JOIN lists l ON ld.list_id = l.id
-       WHERE ld.fname ILIKE $1
-          OR ld.lname ILIKE $1
-          OR ld.email ILIKE $1
-          OR ld.mobile ILIKE $1
-          OR ld.organization ILIKE $1
-       ORDER BY ld.created_at DESC
-       LIMIT 100`,
-      [searchTerm]
-    );
-    res.json({ success: true, data: sanitizeLeadCollectionForUser(result.rows, req.user) });
+    res.json(buildLeadCollectionResponse(collection.rows, req, collection.pagination, collection.summary));
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead search failed" });

@@ -3,6 +3,7 @@ import {
   createLead,
   getLeadsByListId,
   getAllLeads,
+  getAllLeadsCollection,
   exportLeads,
   getLeadById,
   updateLead,
@@ -16,6 +17,7 @@ const router = express.Router();
 router.post("/", createLead);
 router.post("/search", searchLeads);
 router.get("/export", exportLeads);
+router.get("/all", getAllLeadsCollection);
 router.get("/", getAllLeads);
 router.get("/list/:list_id", getLeadsByListId);
 router.get("/:id", getLeadById);

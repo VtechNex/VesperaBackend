@@ -248,6 +248,36 @@ test("RBAC integration hardening", async (t) => {
     assert.equal(exportResponse.data?.message, "You do not have permission to export leads.");
   });
 
+  await t.test("Lead collection endpoint returns paginated contract with filters", async () => {
+    const uniqueSuffix = Date.now();
+    const searchMarker = `${TEMP_PREFIX}_page_${uniqueSuffix}`;
+    await createLeadForExport(mainAdminToken, {
+      fname: searchMarker,
+      lname: "One",
+      notes: "Pagination verification one",
+    });
+    await createLeadForExport(mainAdminToken, {
+      fname: searchMarker,
+      lname: "Two",
+      notes: "Pagination verification two",
+    });
+
+    const pagedResponse = await apiRequest(
+      `/api/leads?search=${encodeURIComponent(searchMarker)}&page=1&limit=1&sortBy=createdAt&sortOrder=desc`,
+      { token: mainAdminToken }
+    );
+
+    assert.equal(pagedResponse.response.status, 200);
+    assert.equal(Array.isArray(pagedResponse.data?.data), true);
+    assert.equal(pagedResponse.data.data.length, 1);
+    assert.equal(pagedResponse.data?.pagination?.page, 1);
+    assert.equal(pagedResponse.data?.pagination?.limit, 1);
+    assert.equal(pagedResponse.data?.pagination?.total, 2);
+    assert.equal(pagedResponse.data?.pagination?.totalPages, 2);
+    assert.equal(typeof pagedResponse.data?.pagination?.hasNextPage, "boolean");
+    assert.equal(typeof pagedResponse.data?.pagination?.hasPrevPage, "boolean");
+  });
+
   await t.test("L2 cannot receive phone numbers and export is blocked by default", async () => {
     const createL2 = await createManagedUser(mainAdminToken, {
       firstName: "Temp",
