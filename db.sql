@@ -11,10 +11,13 @@ CREATE TABLE users (
     password TEXT NOT NULL,
 
     role VARCHAR(20) NOT NULL CHECK (
-        role IN ('MAIN_ADMIN', 'L1', 'L2', 'admin', 'owner', 'manager', 'l1', 'l2')
+        role IN ('MAIN_ADMIN', 'MANAGER', 'L1', 'L2', 'admin', 'owner', 'manager', 'l1', 'l2')
     ),
 
     is_active BOOLEAN DEFAULT TRUE,
+    permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
 
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP

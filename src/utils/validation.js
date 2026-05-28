@@ -1,6 +1,7 @@
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ALLOWED_MANAGED_ROLE_VALUES = new Set([
   "MAIN_ADMIN",
+  "MANAGER",
   "L1",
   "L2",
   "admin",
@@ -136,6 +137,14 @@ export function validateManagedUserPayload(body = {}, options = {}) {
   }
 
   return payload;
+}
+
+export function validatePermissionPayload(body = {}) {
+  if (body == null || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Permissions must be an object");
+  }
+
+  return body;
 }
 
 export function validateListPayload(body = {}, options = {}) {

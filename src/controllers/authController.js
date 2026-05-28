@@ -2,7 +2,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pool from "../db/pool.js";
 import { badRequest, cleanRequiredString, isStrongPassword, isValidEmail, normalizeEmail } from "../utils/validation.js";
-import { normalizeUserRole, ROLES } from "../middleware/security.js";
+import { getEffectivePermissions, isUnknownRole, sanitizePermissionOverrides, normalizeUserRole, ROLES } from "../middleware/security.js";
 
 export async function login(req, res) {
   try {
@@ -15,7 +15,7 @@ export async function login(req, res) {
     }
 
     const { rows } = await pool.query(
-      "SELECT id, email, password, role, username, is_active, first_name, last_name FROM users WHERE email = $1 LIMIT 1",
+      "SELECT id, email, password, role, username, is_active, first_name, last_name, permissions FROM users WHERE email = $1 LIMIT 1",
       [email]
     );
 
@@ -27,17 +27,26 @@ export async function login(req, res) {
     if (user.is_active === false) {
       return res.status(403).json({ error: "Your account is inactive" });
     }
+    if (isUnknownRole(user.role)) {
+      return res.status(403).json({ error: "Your account role is not recognized" });
+    }
 
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
+    const normalizedRole = normalizeUserRole(user.role);
+    const permissions = getEffectivePermissions({
+      role: normalizedRole,
+      permissions: sanitizePermissionOverrides(user.permissions),
+    });
+
     const token = jwt.sign(
       {
         id: user.id,
         email: user.email,
-        role: normalizeUserRole(user.role),
+        role: normalizedRole,
       },
       JWT_SECRET,
       { expiresIn: "1d" }
@@ -48,9 +57,10 @@ export async function login(req, res) {
       user: {
         id: user.id,
         email: user.email,
-        role: normalizeUserRole(user.role),
+        role: normalizedRole,
         username: user.username,
         name: [user.first_name, user.last_name].filter(Boolean).join(" ").trim() || user.username,
+        permissions,
       },
     });
   } catch (err) {
@@ -100,10 +110,10 @@ export async function register(req, res) {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const { rows } = await pool.query(
-      `INSERT INTO users (username, email, password, role)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, username, email, role`,
-      [username, email, hashedPassword, ROLES.MAIN_ADMIN]
+      `INSERT INTO users (username, email, password, role, permissions)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
+       RETURNING id, username, email, role, permissions`,
+      [username, email, hashedPassword, ROLES.MAIN_ADMIN, JSON.stringify({})]
     );
 
     res.status(201).json({

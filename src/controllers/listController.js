@@ -7,7 +7,7 @@ import { badRequest, cleanOptionalLimitedString, cleanRequiredString, validateLi
  */
 export const createList = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canCreateList")) {
+    if (!hasPermissionForRole(req.user, "canCreateList")) {
       return res.status(403).json({ success: false, message: "You do not have permission to create lists." });
     }
 
@@ -51,7 +51,7 @@ export const createList = async (req, res) => {
  */
 export const getAllLists = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canViewLists")) {
+    if (!hasPermissionForRole(req.user, "canViewLists")) {
       return res.status(403).json({ success: false, message: "You do not have permission to view lists." });
     }
 
@@ -77,7 +77,7 @@ export const getAllLists = async (req, res) => {
  */
 export const getListById = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canViewLists")) {
+    if (!hasPermissionForRole(req.user, "canViewLists")) {
       return res.status(403).json({ success: false, message: "You do not have permission to view lists." });
     }
 
@@ -110,7 +110,7 @@ export const getListById = async (req, res) => {
  */
 export const updateList = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canEditList")) {
+    if (!hasPermissionForRole(req.user, "canEditList")) {
       return res.status(403).json({ success: false, message: "You do not have permission to update lists." });
     }
 
@@ -159,7 +159,7 @@ export const updateList = async (req, res) => {
  */
 export const deleteList = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canDeleteList")) {
+    if (!hasPermissionForRole(req.user, "canDeleteList")) {
       return res.status(403).json({ success: false, message: "You do not have permission to delete lists." });
     }
 
@@ -213,7 +213,7 @@ export const deleteList = async (req, res) => {
  */
 export const getListsWithLeadsCount = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canViewLists")) {
+    if (!hasPermissionForRole(req.user, "canViewLists")) {
       return res.status(403).json({ success: false, message: "You do not have permission to view lists." });
     }
 

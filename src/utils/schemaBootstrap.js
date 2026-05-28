@@ -23,9 +23,12 @@ const statements = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS instagram VARCHAR(255)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_url VARCHAR(255)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB DEFAULT '{}'::jsonb`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '{}'::jsonb`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_by UUID REFERENCES users(id) ON DELETE SET NULL`,
   `ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`,
   `ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (
-    role IN ('MAIN_ADMIN', 'L1', 'L2', 'admin', 'owner', 'manager', 'l1', 'l2', 'superadmin', 'sales', 'marketing', 'customer')
+    role IN ('MAIN_ADMIN', 'MANAGER', 'L1', 'L2', 'admin', 'owner', 'manager', 'l1', 'l2', 'superadmin', 'sales', 'marketing', 'customer')
   )`,
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS product_group VARCHAR(150)`,
   `ALTER TABLE leads ADD COLUMN IF NOT EXISTS customer_group VARCHAR(150)`,

@@ -2,6 +2,7 @@ import bcrypt from "bcrypt";
 import pool from "../db/pool.js";
 import {
   badRequest,
+  cleanOptionalString,
   coerceBoolean,
   isNonEmptyString,
   isStrongPassword,
@@ -10,16 +11,20 @@ import {
   validateCompanyProfilePayload,
   validateCustomFieldPayload,
 } from "../utils/validation.js";
-import { normalizeUserRole } from "../middleware/security.js";
+import { getEffectivePermissions, sanitizePermissionOverrides, normalizeUserRole } from "../middleware/security.js";
 
 function mapUser(row) {
+  const role = normalizeUserRole(row.role);
+  const permissions = sanitizePermissionOverrides(row.permissions);
   return {
     id: row.id,
     username: row.username,
     email: row.email,
-    role: normalizeUserRole(row.role),
+    role,
     rawRole: row.role,
     is_active: row.is_active,
+    permissions,
+    effectivePermissions: getEffectivePermissions({ role, permissions }),
     firstName: row.first_name || "",
     lastName: row.last_name || "",
     designation: row.designation || "",
@@ -48,7 +53,7 @@ export async function getCurrentUser(req, res) {
     const result = await pool.query(
       `SELECT id, username, email, role, is_active, first_name, last_name, designation, organization,
               website, mobile, telephone_direct, telephone_office, address1, address2, city, state,
-              zip, country, facebook, twitter, linkedin, instagram, personal_url, preferences
+              zip, country, facebook, twitter, linkedin, instagram, personal_url, preferences, permissions
        FROM users
        WHERE id = $1
        LIMIT 1`,
@@ -103,7 +108,7 @@ export async function updateCurrentUser(req, res) {
        WHERE id = $22
        RETURNING id, username, email, role, is_active, first_name, last_name, designation, organization,
                  website, mobile, telephone_direct, telephone_office, address1, address2, city, state,
-                 zip, country, facebook, twitter, linkedin, instagram, personal_url, preferences`,
+                 zip, country, facebook, twitter, linkedin, instagram, personal_url, preferences, permissions`,
       [
         email,
         req.body.firstName.trim(),
@@ -175,7 +180,7 @@ export async function changePassword(req, res) {
 export async function getAssignableUsers(req, res) {
   try {
     const result = await pool.query(
-      `SELECT id, username, email, role, is_active
+      `SELECT id, username, email, role, is_active, permissions
        FROM users
        WHERE is_active = TRUE
        ORDER BY username ASC`
@@ -189,6 +194,7 @@ export async function getAssignableUsers(req, res) {
         email: row.email,
         role: normalizeUserRole(row.role),
         is_active: row.is_active,
+        permissions: sanitizePermissionOverrides(row.permissions),
       })),
     });
   } catch (error) {

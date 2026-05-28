@@ -64,7 +64,7 @@ export const createLead = async (req, res) => {
     const user_role = req.user.role;
     const payload = parseLeadPayload(req.body);
 
-    if (!hasPermissionForRole(user_role, "canCreateLead")) {
+    if (!hasPermissionForRole(req.user, "canCreateLead")) {
       return res.status(403).json({ success: false, message: "You do not have permission to create leads." });
     }
 
@@ -158,7 +158,7 @@ export const getLeadsByListId = async (req, res) => {
   try {
     const { list_id } = req.params;
 
-    if (!hasPermissionForRole(req.user?.role, "canViewLeads")) {
+    if (!hasPermissionForRole(req.user, "canViewLeads")) {
       return res.status(403).json({ success: false, message: "You do not have permission to view leads." });
     }
 
@@ -188,7 +188,7 @@ export const getLeadsByListId = async (req, res) => {
 
 export const getAllLeads = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canViewLeads")) {
+    if (!hasPermissionForRole(req.user, "canViewLeads")) {
       return res.status(403).json({ success: false, message: "You do not have permission to view leads." });
     }
 
@@ -206,11 +206,31 @@ export const getAllLeads = async (req, res) => {
   }
 };
 
+export const exportLeads = async (req, res) => {
+  try {
+    if (!hasPermissionForRole(req.user, "canExportLeads")) {
+      return res.status(403).json({ success: false, message: "You do not have permission to export leads." });
+    }
+
+    const result = await pool.query(
+      `SELECT ld.*, l.name AS list_name
+       FROM leads ld
+       INNER JOIN lists l ON ld.list_id = l.id
+       ORDER BY ld.created_at DESC`
+    );
+
+    return res.json({ success: true, data: sanitizeLeadCollectionForUser(result.rows, req.user) });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ success: false, message: "Failed to export leads" });
+  }
+};
+
 export const getLeadById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!hasPermissionForRole(req.user?.role, "canViewLeads")) {
+    if (!hasPermissionForRole(req.user, "canViewLeads")) {
       return res.status(403).json({ success: false, message: "You do not have permission to view lead details." });
     }
 
@@ -239,11 +259,10 @@ export const getLeadById = async (req, res) => {
 
 export const updateLead = async (req, res) => {
   try {
-    const user_role = req.user.role;
     const { id } = req.params;
     const payload = parseLeadPayload(req.body);
 
-    if (!hasPermissionForRole(user_role, "canEditLead")) {
+    if (!hasPermissionForRole(req.user, "canEditLead")) {
       return res.status(403).json({ success: false, message: "You do not have permission to update leads." });
     }
 
@@ -329,7 +348,7 @@ export const deleteLead = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!hasPermissionForRole(req.user?.role, "canDeleteLead")) {
+    if (!hasPermissionForRole(req.user, "canDeleteLead")) {
       return res.status(403).json({ success: false, message: "You do not have permission to delete leads." });
     }
 
@@ -352,10 +371,9 @@ export const deleteLead = async (req, res) => {
 
 export const searchLeads = async (req, res) => {
   try {
-    const role = req.user.role;
     const { query } = req.body;
 
-    if (!hasPermissionForRole(role, "canViewLeads")) {
+    if (!hasPermissionForRole(req.user, "canViewLeads")) {
       return res.status(403).json({ success: false, message: "You do not have permission to search leads." });
     }
 
@@ -390,7 +408,7 @@ export const searchLeads = async (req, res) => {
 
 export const triggerFollowUps = async (req, res) => {
   try {
-    if (!hasPermissionForRole(req.user?.role, "canManageUsers")) {
+    if (!hasPermissionForRole(req.user, "canManageUsers")) {
       return res.status(403).json({ success: false, message: "You do not have permission to trigger follow-ups." });
     }
     await processDueFollowUps();

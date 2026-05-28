@@ -1,173 +1,104 @@
 import jwt from "jsonwebtoken";
 import pool from "../db/pool.js";
+import {
+  areAllPermissionValuesFalse,
+  getDefaultPermissionsForRole,
+  getEffectivePermissions,
+  hasPermission,
+  isUnknownRole,
+  normalizePermissionRecord,
+  normalizeUserRole,
+  ROLES,
+  sanitizePermissionOverrides,
+  sanitizeLeadCollectionForUser,
+  sanitizeLeadForUser,
+} from "../auth/permissions.js";
 
-export const ROLES = {
-  MAIN_ADMIN: "MAIN_ADMIN",
-  L1: "L1",
-  L2: "L2",
+export {
+  areAllPermissionValuesFalse,
+  getDefaultPermissionsForRole,
+  getEffectivePermissions,
+  isUnknownRole,
+  normalizePermissionRecord,
+  normalizeUserRole,
+  ROLES,
+  sanitizePermissionOverrides,
+  sanitizeLeadCollectionForUser,
+  sanitizeLeadForUser,
 };
-
-export const PERMISSIONS_MATRIX = {
-  [ROLES.MAIN_ADMIN]: {
-    canViewDashboard: true,
-    canViewLeads: true,
-    canViewLeadPhone: true,
-    canCreateLead: true,
-    canEditLead: true,
-    canDeleteLead: true,
-    canExportLeads: true,
-    canViewLists: true,
-    canCreateList: true,
-    canEditList: true,
-    canDeleteList: true,
-    canManageUsers: true,
-    canManageSettings: true,
-    canReadCustomFieldsForLeadForm: true,
-    canManageCustomFields: true,
-    canManageCompanyProfile: true,
-    canManageQualifiers: true,
-    canManageLeadStages: true,
-    canManagePropertyMedia: true,
-  },
-  [ROLES.L1]: {
-    canViewDashboard: true,
-    canViewLeads: true,
-    canViewLeadPhone: true,
-    canCreateLead: true,
-    canEditLead: false,
-    canDeleteLead: false,
-    canExportLeads: false,
-    canViewLists: true,
-    canCreateList: false,
-    canEditList: false,
-    canDeleteList: false,
-    canManageUsers: false,
-    canManageSettings: false,
-    canReadCustomFieldsForLeadForm: true,
-    canManageCustomFields: false,
-    canManageCompanyProfile: false,
-    canManageQualifiers: false,
-    canManageLeadStages: false,
-    canManagePropertyMedia: false,
-  },
-  [ROLES.L2]: {
-    canViewDashboard: true,
-    canViewLeads: true,
-    canViewLeadPhone: false,
-    canCreateLead: false,
-    canEditLead: false,
-    canDeleteLead: false,
-    canExportLeads: false,
-    canViewLists: true,
-    canCreateList: false,
-    canEditList: false,
-    canDeleteList: false,
-    canManageUsers: false,
-    canManageSettings: false,
-    canReadCustomFieldsForLeadForm: false,
-    canManageCustomFields: false,
-    canManageCompanyProfile: false,
-    canManageQualifiers: false,
-    canManageLeadStages: false,
-    canManagePropertyMedia: false,
-  },
-};
-
-const LEGACY_ROLE_MAP = {
-  main_admin: ROLES.MAIN_ADMIN,
-  admin: ROLES.MAIN_ADMIN,
-  superadmin: ROLES.MAIN_ADMIN,
-  owner: ROLES.MAIN_ADMIN,
-  l1: ROLES.L1,
-  manager: ROLES.L1,
-  l2: ROLES.L2,
-  sales: ROLES.L2,
-  marketing: ROLES.L2,
-  customer: ROLES.L2,
-};
-
-export function normalizeUserRole(rawRole) {
-  if (!rawRole) return ROLES.L2;
-  return LEGACY_ROLE_MAP[String(rawRole).trim().toLowerCase()] || ROLES.L2;
-}
-
-export function getPermissionsForRole(rawRole) {
-  return PERMISSIONS_MATRIX[normalizeUserRole(rawRole)];
-}
 
 export function hasPermissionForRole(rawRole, permissionName) {
-  const permissions = getPermissionsForRole(rawRole);
-  return Boolean(permissions?.[permissionName]);
+  if (rawRole && typeof rawRole === "object") {
+    return hasPermission(rawRole, permissionName);
+  }
+  return hasPermission({ role: rawRole }, permissionName);
 }
 
-export function sanitizeLeadForUser(lead, user) {
-  if (!lead) return lead;
-  if (hasPermissionForRole(user?.role, "canViewLeadPhone")) return lead;
+function buildAuthenticatedUser(row) {
+  const normalizedRole = normalizeUserRole(row.role);
+  const userProfile = {
+    id: row.id,
+    email: row.email,
+    role: normalizedRole,
+    rawRole: row.role,
+    username: row.username,
+    name: [row.first_name, row.last_name].filter(Boolean).join(" ").trim() || row.username,
+    is_active: row.is_active,
+    permissions: sanitizePermissionOverrides(row.permissions),
+  };
 
-  const sanitizedLead = { ...lead };
-  delete sanitizedLead.mobile;
-  delete sanitizedLead.tel1;
-  delete sanitizedLead.tel2;
-  sanitizedLead.mobile_masked = "Restricted";
-  sanitizedLead.tel1_masked = "Restricted";
-  sanitizedLead.tel2_masked = "Restricted";
-  return sanitizedLead;
-}
-
-export function sanitizeLeadCollectionForUser(leads = [], user) {
-  return Array.isArray(leads) ? leads.map((lead) => sanitizeLeadForUser(lead, user)) : [];
+  return {
+    ...userProfile,
+    effectivePermissions: getEffectivePermissions(userProfile),
+  };
 }
 
 export const authMiddleware = (req, res, next) => {
   const JWT_SECRET = process.env.JWT_SECRET;
+
   (async () => {
     try {
-    const authHeader = req.headers.authorization;
+      const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Authentication required" });
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+
+      const token = authHeader.split(" ")[1];
+
+      if (!JWT_SECRET) {
+        throw new Error("JWT_SECRET not configured");
+      }
+
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const userResult = await pool.query(
+        `SELECT id, email, role, is_active, username, first_name, last_name, permissions
+         FROM users
+         WHERE id = $1
+         LIMIT 1`,
+        [decoded.id]
+      );
+
+      if (userResult.rowCount === 0) {
+        return res.status(401).json({ error: "User no longer exists" });
+      }
+
+      const dbUser = userResult.rows[0];
+
+      if (dbUser.is_active === false) {
+        return res.status(403).json({ error: "Your account is inactive" });
+      }
+
+      if (isUnknownRole(dbUser.role)) {
+        return res.status(403).json({ error: "Your account role is not recognized" });
+      }
+
+      req.user = buildAuthenticatedUser(dbUser);
+      return next();
+    } catch (error) {
+      console.error("Auth error:", error?.message || error);
+      return res.status(401).json({ error: "Invalid or expired token" });
     }
-
-    const token = authHeader.split(" ")[1];
-
-    if (!JWT_SECRET) {
-      throw new Error("JWT_SECRET not configured");
-    }
-
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const userResult = await pool.query(
-      `SELECT id, email, role, is_active, username, first_name, last_name
-       FROM users
-       WHERE id = $1
-       LIMIT 1`,
-      [decoded.id]
-    );
-
-    if (userResult.rowCount === 0) {
-      return res.status(401).json({ error: "User no longer exists" });
-    }
-
-    const dbUser = userResult.rows[0];
-    if (dbUser.is_active === false) {
-      return res.status(403).json({ error: "Your account is inactive" });
-    }
-
-    const canonicalRole = normalizeUserRole(dbUser.role);
-    req.user = {
-      id: dbUser.id,
-      email: dbUser.email,
-      role: canonicalRole,
-      rawRole: dbUser.role,
-      username: dbUser.username,
-      name: [dbUser.first_name, dbUser.last_name].filter(Boolean).join(" ").trim() || dbUser.username,
-      permissions: getPermissionsForRole(canonicalRole),
-    };
-
-    next();
-  } catch (err) {
-    console.error("Auth error:", err.message);
-    return res.status(401).json({ error: "Invalid or expired token" });
-  }
   })();
 };
 
@@ -176,15 +107,45 @@ export const requireRole = (role) => {
     if (normalizeUserRole(req.user?.role) !== normalizeUserRole(role)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    next();
+    return next();
   };
 };
 
 export const requirePermission = (permissionName) => {
   return (req, res, next) => {
-    if (!hasPermissionForRole(req.user?.role, permissionName)) {
+    if (!hasPermission(req.user, permissionName)) {
       return res.status(403).json({ error: "Access denied" });
     }
-    next();
+    return next();
   };
 };
+
+export function canManageTargetUser(actor, targetUser) {
+  const actorRole = normalizeUserRole(actor?.role);
+  const targetRole = normalizeUserRole(targetUser?.role);
+
+  if (actorRole === ROLES.MAIN_ADMIN) {
+    return true;
+  }
+
+  if (actorRole === ROLES.MANAGER) {
+    return targetRole === ROLES.L1 || targetRole === ROLES.L2;
+  }
+
+  return false;
+}
+
+export function canAssignRole(actor, targetRole) {
+  const actorRole = normalizeUserRole(actor?.role);
+  const normalizedTargetRole = normalizeUserRole(targetRole);
+
+  if (actorRole === ROLES.MAIN_ADMIN) {
+    return Boolean(normalizedTargetRole);
+  }
+
+  if (actorRole === ROLES.MANAGER) {
+    return normalizedTargetRole === ROLES.L1 || normalizedTargetRole === ROLES.L2;
+  }
+
+  return false;
+}
