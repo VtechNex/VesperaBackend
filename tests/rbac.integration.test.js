@@ -15,6 +15,7 @@ let stableUsers;
 let createdUserIds = [];
 let createdLeadIds = [];
 let createdListIds = [];
+let createdNotificationIds = [];
 
 function buildToken(user) {
   return jwt.sign(
@@ -108,6 +109,9 @@ async function createLeadForExport(token, overrides = {}) {
 }
 
 async function cleanupArtifacts() {
+  if (createdNotificationIds.length) {
+    await pool.query(`DELETE FROM notifications WHERE id = ANY($1::bigint[])`, [createdNotificationIds]);
+  }
   if (createdLeadIds.length) {
     await pool.query(`DELETE FROM leads WHERE id = ANY($1::bigint[])`, [createdLeadIds]);
   }
@@ -117,6 +121,34 @@ async function cleanupArtifacts() {
   if (createdUserIds.length) {
     await pool.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [createdUserIds]);
   }
+}
+
+async function createNotificationRecord(payload) {
+  const result = await pool.query(
+    `INSERT INTO notifications (
+       type, title, message, entity_type, entity_id, recipient_user_id, recipient_role,
+       is_global, is_read, created_by, metadata
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE, $9, $10::jsonb)
+     RETURNING id`,
+    [
+      payload.type,
+      payload.title,
+      payload.message,
+      payload.entityType || null,
+      payload.entityId == null ? null : String(payload.entityId),
+      payload.recipientUserId,
+      payload.recipientRole || null,
+      Boolean(payload.isGlobal),
+      payload.createdBy || null,
+      JSON.stringify(payload.metadata || {}),
+    ]
+  );
+
+  const id = result.rows[0]?.id;
+  if (id) {
+    createdNotificationIds.push(id);
+  }
+  return id;
 }
 
 test.before(async () => {
@@ -394,5 +426,63 @@ test("RBAC integration hardening", async (t) => {
     });
 
     assert.ok([400, 403].includes(escalateResponse.response.status));
+  });
+
+  await t.test("Notifications are scoped per user and support read operations without leaking restricted fields", async () => {
+    const mainAdminToken = buildToken(stableUsers.mainAdmin);
+    const l2Token = buildToken(stableUsers.l2);
+
+    const uniqueSuffix = Date.now();
+    const createLeadResponse = await apiRequest("/api/leads", {
+      method: "POST",
+      token: mainAdminToken,
+      body: {
+        list_id: await getFirstListId(mainAdminToken),
+        fname: `Notification ${uniqueSuffix}`,
+        lname: "Lead",
+        mobile: `97${String(uniqueSuffix).slice(-8)}`,
+        email: `${TEMP_PREFIX}_notification_${uniqueSuffix}@vespera.local`,
+      },
+    });
+    assert.equal(createLeadResponse.response.status, 201);
+    createdLeadIds.push(createLeadResponse.data?.data?.id);
+
+    const l2Notifications = await apiRequest("/api/notifications?page=1&limit=10", { token: l2Token });
+    assert.equal(l2Notifications.response.status, 200);
+    const createdNotification = l2Notifications.data?.data?.find((entry) => entry.type === "lead_created");
+    assert.ok(createdNotification, "Expected a lead_created notification for L2");
+    assert.equal(createdNotification.message.includes("97"), false);
+    assert.equal(createdNotification.metadata?.leadPhone, undefined);
+
+    const l2UnreadBefore = await apiRequest("/api/notifications/unread-count", { token: l2Token });
+    assert.equal(l2UnreadBefore.response.status, 200);
+    assert.ok(Number(l2UnreadBefore.data?.data?.unreadCount || 0) >= 1);
+
+    const privateNotificationId = await createNotificationRecord({
+      type: "access_update",
+      title: "Access Updated",
+      message: "Your account access changed.",
+      recipientUserId: stableUsers.manager.id,
+      recipientRole: "MANAGER",
+      createdBy: stableUsers.mainAdmin.id,
+      metadata: { visibility: "private" },
+    });
+    assert.ok(privateNotificationId);
+
+    const forbiddenRead = await apiRequest(`/api/notifications/${privateNotificationId}/read`, {
+      method: "PATCH",
+      token: l2Token,
+    });
+    assert.equal(forbiddenRead.response.status, 404);
+
+    const ownRead = await apiRequest(`/api/notifications/${createdNotification.id}/read`, {
+      method: "PATCH",
+      token: l2Token,
+    });
+    assert.equal(ownRead.response.status, 200);
+
+    const l2UnreadAfter = await apiRequest("/api/notifications/unread-count", { token: l2Token });
+    assert.equal(l2UnreadAfter.response.status, 200);
+    assert.ok(Number(l2UnreadAfter.data?.data?.unreadCount || 0) >= 0);
   });
 });

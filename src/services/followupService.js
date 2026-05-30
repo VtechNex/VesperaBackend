@@ -2,6 +2,7 @@ import cron from "node-cron";
 import pool from "../db/pool.js";
 import { sendEmail } from "./emailService.js";
 import { followUpEmailTemplate } from "../utils/emailTemplates.js";
+import { createFollowUpNotification } from "./notificationService.js";
 
 // Cron expression for follow-up processing.
 // Default: every minute. Set FOLLOWUP_CRON in .env to change.
@@ -59,6 +60,12 @@ export async function processDueFollowUps() {
       adminEmails.forEach(email => ccList.add(email));
 
       const cc = Array.from(ccList).filter(Boolean);
+
+      try {
+        await createFollowUpNotification(lead);
+      } catch (notificationError) {
+        console.error(`[followupService] Failed to create follow-up notification for lead ${lead.id}:`, notificationError);
+      }
 
       const subject = `Follow-up reminder: ${lead.fname || "Lead"} ${lead.lname || ""}`;
       const text = `Hello ${lead.assignee_name || "Team"},

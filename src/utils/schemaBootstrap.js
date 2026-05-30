@@ -93,6 +93,24 @@ const statements = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS uq_custom_fields_user_name ON custom_fields (user_id, lower(name))`,
   `CREATE INDEX IF NOT EXISTS idx_custom_fields_user_id ON custom_fields (user_id)`,
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id BIGSERIAL PRIMARY KEY,
+    type VARCHAR(80) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    entity_type VARCHAR(80),
+    entity_id TEXT,
+    recipient_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    recipient_role VARCHAR(20),
+    is_global BOOLEAN NOT NULL DEFAULT FALSE,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    read_at TIMESTAMP,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_recipient_created ON notifications (recipient_user_id, created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications (recipient_user_id, is_read, created_at DESC)`,
 ];
 
 export async function ensureSchema() {

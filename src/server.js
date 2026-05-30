@@ -10,6 +10,7 @@ import leadsRouter from "./routes/leads.js";
 import propertiesRouter from "./routes/properties.js";
 import globalRouter from "./routes/globalRouter.js";
 import settingsRouter from "./routes/settings.js";
+import notificationsRouter from "./routes/notifications.js";
 import { authMiddleware, requirePermission } from "./middleware/security.js";
 import { startFollowUpScheduler } from "./services/followupService.js";
 import { ensureSchema } from "./utils/schemaBootstrap.js";
@@ -101,6 +102,7 @@ app.use("/api/lists", authMiddleware, listsRouter);
 app.use("/api/leads", authMiddleware, leadsRouter);
 app.use("/api/properties", authMiddleware, requirePermission("canManagePropertyMedia"), propertiesRouter);
 app.use("/api/settings", authMiddleware, settingsRouter);
+app.use("/api/notifications", authMiddleware, notificationsRouter);
 app.use("/api/global", globalRouter);
 app.use("/", (req, res) => {
   res.send("Vespera Backend is UP");

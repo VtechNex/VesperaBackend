@@ -15,6 +15,10 @@ import {
   validateManagedUserPayload,
   validatePermissionPayload,
 } from "../utils/validation.js";
+import {
+  createUserCreatedNotification,
+  createUserPermissionUpdateNotification,
+} from "../services/notificationService.js";
 
 function getStoredPermissionsForRole(role, permissions) {
   const normalizedRole = normalizeUserRole(role);
@@ -111,6 +115,14 @@ function assertNoSelfDeactivation(actor, targetUserId, isActive) {
   }
 }
 
+async function emitNotificationSafely(task, label) {
+  try {
+    await task();
+  } catch (error) {
+    console.error(`[notifications] ${label} failed`, error);
+  }
+}
+
 export const createUser = async (req, res) => {
   try {
     const payload = validateManagedUserPayload(req.body, { requirePassword: true });
@@ -142,9 +154,20 @@ export const createUser = async (req, res) => {
       ]
     );
 
+    const createdUser = sanitizeManagedUser(result.rows[0]);
+
+    await emitNotificationSafely(
+      () =>
+        createUserCreatedNotification(createdUser.id, {
+          actorUserId: req.user.id,
+          role: createdUser.role,
+        }),
+      "createUserCreatedNotification"
+    );
+
     return res.status(201).json({
       success: true,
-      data: sanitizeManagedUser(result.rows[0]),
+      data: createdUser,
     });
   } catch (error) {
     console.error(error);
@@ -216,7 +239,19 @@ export const updateUser = async (req, res) => {
       ]
     );
 
-    return res.json({ success: true, data: sanitizeManagedUser(result.rows[0]) });
+    const updatedUser = sanitizeManagedUser(result.rows[0]);
+
+    await emitNotificationSafely(
+      () =>
+        createUserPermissionUpdateNotification(updatedUser.id, {
+          actorUserId: req.user.id,
+          role: updatedUser.role,
+          isActive: updatedUser.isActive,
+        }),
+      "createUserPermissionUpdateNotification"
+    );
+
+    return res.json({ success: true, data: updatedUser });
   } catch (error) {
     console.error(error);
     if (error instanceof Error) {
@@ -257,6 +292,15 @@ export const deactiveUser = async (req, res) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $2`,
       [req.user.id, id]
+    );
+
+    await emitNotificationSafely(
+      () =>
+        createUserPermissionUpdateNotification(id, {
+          actorUserId: req.user.id,
+          isActive: false,
+        }),
+      "createUserPermissionUpdateNotification"
     );
 
     return res.json({ success: true, message: "User deactivated successfully" });

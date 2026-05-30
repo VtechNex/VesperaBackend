@@ -6,6 +6,11 @@ import {
   sanitizeLeadForUser,
 } from "../middleware/security.js";
 import {
+  createLeadAssignedNotification,
+  createLeadNotification,
+  createLeadStageUpdatedNotification,
+} from "../services/notificationService.js";
+import {
   badRequest,
   cleanOptionalString,
   isValidEmail,
@@ -28,6 +33,14 @@ const SORTABLE_COLUMNS = {
 };
 const DEFAULT_SORT_BY = "createdAt";
 const DEFAULT_SORT_ORDER = "desc";
+
+async function emitNotificationSafely(task, label) {
+  try {
+    await task();
+  } catch (error) {
+    console.error(`[notifications] ${label} failed`, error);
+  }
+}
 
 function buildFollowUpTimestamp(date, time) {
   if (!date) return null;
@@ -305,7 +318,21 @@ export const createLead = async (req, res) => {
       ]
     );
 
-    res.status(201).json({ success: true, data: sanitizeLeadForUser(result.rows[0], req.user) });
+    const createdLead = result.rows[0];
+
+    await emitNotificationSafely(
+      () => createLeadNotification(createdLead, req.user.id),
+      "createLeadNotification"
+    );
+
+    if (createdLead.assigned_to) {
+      await emitNotificationSafely(
+        () => createLeadAssignedNotification(createdLead, req.user.id),
+        "createLeadAssignedNotification"
+      );
+    }
+
+    res.status(201).json({ success: true, data: sanitizeLeadForUser(createdLead, req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead creation failed" });
@@ -452,6 +479,20 @@ export const updateLead = async (req, res) => {
       return badRequest(res, "A valid email address is required");
     }
 
+    const existingLeadResult = await pool.query(
+      `SELECT id, fname, lname, assigned_to, lead_stage
+       FROM leads
+       WHERE id = $1
+       LIMIT 1`,
+      [id]
+    );
+
+    if (existingLeadResult.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "Lead not found" });
+    }
+
+    const existingLead = existingLeadResult.rows[0];
+
     const result = await pool.query(
       `UPDATE leads SET
         fname = $1,
@@ -512,11 +553,28 @@ export const updateLead = async (req, res) => {
       ]
     );
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: "Lead not found" });
+    const updatedLead = result.rows[0];
+
+    const previousAssignee = existingLead.assigned_to ? String(existingLead.assigned_to) : "";
+    const nextAssignee = updatedLead.assigned_to ? String(updatedLead.assigned_to) : "";
+    const previousStage = existingLead.lead_stage || "";
+    const nextStage = updatedLead.lead_stage || "";
+
+    if (nextAssignee && nextAssignee !== previousAssignee) {
+      await emitNotificationSafely(
+        () => createLeadAssignedNotification(updatedLead, req.user.id),
+        "createLeadAssignedNotification"
+      );
     }
 
-    res.json({ success: true, data: sanitizeLeadForUser(result.rows[0], req.user) });
+    if (nextStage && nextStage !== previousStage) {
+      await emitNotificationSafely(
+        () => createLeadStageUpdatedNotification(updatedLead, previousStage, req.user.id),
+        "createLeadStageUpdatedNotification"
+      );
+    }
+
+    res.json({ success: true, data: sanitizeLeadForUser(updatedLead, req.user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Lead update failed" });
