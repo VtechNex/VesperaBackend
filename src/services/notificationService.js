@@ -421,3 +421,26 @@ export async function markAllNotificationsRead(userId) {
 
   return Number(result.rowCount || 0);
 }
+
+export async function deleteNotification(notificationId, userId) {
+  const result = await pool.query(
+    `DELETE FROM notifications
+     WHERE id = $1
+       AND recipient_user_id = $2
+     RETURNING id, is_read`,
+    [notificationId, userId]
+  );
+
+  return result.rows[0] || null;
+}
+
+export async function clearAllNotifications(userId) {
+  const result = await pool.query(
+    `DELETE FROM notifications
+     WHERE recipient_user_id = $1
+     RETURNING id, is_read`,
+    [userId]
+  );
+
+  return result.rows;
+}

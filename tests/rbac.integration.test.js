@@ -481,6 +481,25 @@ test("RBAC integration hardening", async (t) => {
     });
     assert.equal(ownRead.response.status, 200);
 
+    const ownDelete = await apiRequest(`/api/notifications/${createdNotification.id}`, {
+      method: "DELETE",
+      token: l2Token,
+    });
+    assert.equal(ownDelete.response.status, 200);
+
+    const clearOtherUsers = await apiRequest("/api/notifications/clear-all", {
+      method: "DELETE",
+      token: l2Token,
+    });
+    assert.equal(clearOtherUsers.response.status, 200);
+
+    const managerNotificationsAfter = await apiRequest("/api/notifications?page=1&limit=10", { token: managerToken });
+    assert.equal(managerNotificationsAfter.response.status, 200);
+    assert.equal(
+      managerNotificationsAfter.data?.data?.some((entry) => String(entry.id) === String(privateNotificationId)),
+      true
+    );
+
     const l2UnreadAfter = await apiRequest("/api/notifications/unread-count", { token: l2Token });
     assert.equal(l2UnreadAfter.response.status, 200);
     assert.ok(Number(l2UnreadAfter.data?.data?.unreadCount || 0) >= 0);

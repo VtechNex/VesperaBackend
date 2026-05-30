@@ -1,4 +1,6 @@
 import {
+  clearAllNotifications,
+  deleteNotification,
   getNotificationsForUser,
   getUnreadNotificationCount,
   markAllNotificationsRead,
@@ -71,5 +73,45 @@ export async function markAllNotificationsAsRead(req, res) {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ success: false, message: "Failed to update notifications" });
+  }
+}
+
+export async function deleteNotificationById(req, res) {
+  try {
+    const deleted = await deleteNotification(req.params.id, req.user.id);
+
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Notification not found",
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        id: deleted.id,
+        wasUnread: !deleted.is_read,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Failed to delete notification" });
+  }
+}
+
+export async function clearAllNotificationsForCurrentUser(req, res) {
+  try {
+    const deletedRows = await clearAllNotifications(req.user.id);
+    return res.json({
+      success: true,
+      data: {
+        deletedCount: deletedRows.length,
+        deletedUnreadCount: deletedRows.filter((row) => row.is_read === false).length,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Failed to clear notifications" });
   }
 }
